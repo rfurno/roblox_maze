@@ -1,0 +1,13 @@
+# Roblox place binaries (instances live in Studio)
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Generated
+sourcemap.json

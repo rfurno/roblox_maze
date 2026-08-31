@@ -3,7 +3,7 @@
 Place: **Maze Runner** (`placeId: 16171071941`, universe `5585682598`)
 Studio instance reviewed in Edit mode on 2026-08-31.
 
-This document describes what the **live place** actually does. The rebuild spec is **`GAME_DESIGN.md`**. Do not treat this inventory as the target design.
+This document describes what the **live place** actually does. Rebuild gameplay is **`GAME_DESIGN.md`**; architecture and Rojo layout are **`DESIGN.md`**. Do not treat this inventory as the target design.
 
 ---
 

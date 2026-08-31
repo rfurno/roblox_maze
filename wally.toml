@@ -1,0 +1,12 @@
+[package]
+name = "maze-runner/game"
+version = "0.1.0"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+private = true
+
+[dependencies]
+# Do not `wally install` yet — Wally is not on this machine.
+# Packages/ProfileStore.luau is vendored from GitHub main:
+# https://github.com/MadStudioRoblox/ProfileStore
+ProfileStore = "lm-loleris/profilestore@1.0.3"

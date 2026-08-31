@@ -1,6 +1,6 @@
 # Maze Runner — Game Design (rebuild spec)
 
-This is the source of truth for a from-scratch rebuild.
+This is the source of truth for **gameplay**. Architecture, Rojo layout, and the rebuild roadmap are in **`DESIGN.md`**.
 
 `GAME_LOGIC.md` is the inventory of the **live** place (`placeId: 16171071941`). Do not copy its scripts, tags, or bugs. Copy the *fantasy*: a shared-world obby maze you walk into, race, and badge.
 
@@ -184,12 +184,10 @@ Prismatic (or equivalent) ping-pong platforms. **Safe.** No damage trap on the p
 
 **Persistence**
 
-- Profile (ProfileService or equivalent): `{ Things = {}, LastSession = "N/A" }`
-- OrderedDataStore for times and collector counts. Times stored as integer milliseconds.
+- **ProfileStore** (player session): `{ Things = {}, LastSession = "N/A", BestTimes = {} }`. Key `tostring(userId)`. Not for leaderboards.
+- **OrderedDataStore** `MazeRunnerStats` **per Roblox scope** (`EASY_1` … `INSANE_1`, `COLLECTOR`). Key `tostring(userId)`. Times as integer milliseconds.
 
-Scopes: `EASY_1`, `EASY_2`, `MILD_1`, `MILD_2`, `HARD_1`, `INSANE_1`, `COLLECTOR`.
-
-Keys: `scope/stat/userId`. Maze boards ascending (fastest first). Collector descending.
+Maze boards ascending (fastest first). Collector descending. HUD personal-best reads `BestTimes` on the profile; boards read ODS.
 
 **World boards** — six time panels + one Collector panel, top 10, refresh ~60–70s. No pumpkin board.
 
@@ -226,7 +224,7 @@ Achievements panel: always available from lobby HUD. Grey uncollected; check + c
 
 No per-maze map passes. No breadcrumbs. No ProcessReceipt until a real developer product exists (none in MVP).
 
-**Maps:** if owned, HUD button while `InRun` toggles `Workspace.Mazes.Solution.<MAZE_ID>` cloned from the baker’s solution model. Click again destroys it.
+**Maps:** if owned, HUD button while `InRun` toggles a **client-local** clone of `ReplicatedStorage.MazeSolution.<MAZE_ID>` (baker stamps world CFrames). Click again destroys the local clone. Not a shared `Workspace.Mazes.Solution`.
 
 **Insane:** ownership checked on the door. Shop prompt in the lobby.
 
@@ -249,13 +247,13 @@ No per-maze map passes. No breadcrumbs. No ProcessReceipt until a real developer
 
 ---
 
-## 11. Maze baker (Studio-only)
+## 11. Maze baker (edit-time only)
 
-A disabled command script or plugin. Not required by Session or MazeRun. Re-bake destroys that maze’s `Board*` folder only.
+Source: `src/server/Baker` (Rojo). `RunBake` is Disabled. Not required by Session or MazeRun at runtime. Invoke `MazeBaker.Bake("EASY_1")` from the Studio command bar. Re-bake destroys that maze’s `Board*` folder only.
 
 ### What it stamps
 
-Floor, walls from a template, perimeter, entrance/exit openings, tagged gate + exit plates, fall volume around the AABB, optional Solution overlay (unique-path centerline).
+Floor, walls from a template, perimeter, entrance/exit openings, tagged gate + exit plates, **void-shell** fall volume (under-floor slab + outer skirts — not a solid maze AABB), optional Solution overlay (unique-path centerline at world CFrames).
 
 ### What it does not stamp
 

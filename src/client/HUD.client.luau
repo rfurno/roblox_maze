@@ -1,0 +1,1 @@
+-- Timer, stamina, give-up. Implemented with the HUD slice.

@@ -4,12 +4,14 @@
 |---|---|
 | **Author** | Grok (design-doc-writer) |
 | **Date** | 2026-08-31 |
-| **Status** | Draft |
+| **Status** | In progress — Rojo + ProfileStore scaffolded |
 | **Place** | New unpublished Roblox place (not a patch of live `placeId` 16171071941) |
 | **Product spec** | [`GAME_DESIGN.md`](/Users/renatoalmeida/Dev/roblox_maze/GAME_DESIGN.md) — locked |
 | **Live inventory** | [`GAME_LOGIC.md`](/Users/renatoalmeida/Dev/roblox_maze/GAME_LOGIC.md) — constraints and anti-patterns only |
 
-This document restates the locked product, specifies how we build it as a new Studio place, and sequences the work as independently shippable PRs. It does not invent gameplay. JetPack is out of MVP.
+This document restates the locked product, specifies how we build it (Rojo Luau + unpublished place geometry + ProfileStore), and sequences the work as independently shippable PRs. It does not invent gameplay. JetPack is out of MVP.
+
+**In the repo now:** `default.project.json` (`servePort` **34873**), `src/` stubs, `src/server/Session.luau` (ProfileStore), vendored `Packages/ProfileStore.luau`. Baker `Bake` is not implemented. The Studio plugin needs `rojo serve` running or it reports “server not running”. 21 Days keeps `localhost:34872`.
 
 ---
 
@@ -17,7 +19,7 @@ This document restates the locked product, specifies how we build it as a new St
 
 Maze Runner is a shared-world obby: one static place, six baked mazes, no matchmaking, no lives, no currency. A player walks from a central lobby into a difficulty, crosses a gate (one run starts), races the clock through learnable hazards, and either **Completes** (badge + best time) or **Fails** (give-up / lobby portal / leave — no save). Death and falling off the map are **not** Fail: they dump the player at **that maze’s entrance** with the timer still running.
 
-The live place (`16171071941`) already ships this fantasy, but its scripts are duplicated, mis-tagged, and wrong on the run contract (death leaves `InMaze` and the HUD running; Insane uses a shared `CanCollide` door; per-maze waypoint passes; JetPack coupled to Insane; Easy/Insane have no fall volumes). The rebuild is a **new place** with ten named modules, data-driven maze rows, a Studio-only baker, and two SKUs (All Maps + Insane). First playable is baker + Easy 1 + the run machine (PRs 1–3).
+The live place (`16171071941`) already ships this fantasy, but its scripts are duplicated, mis-tagged, and wrong on the run contract (death leaves `InMaze` and the HUD running; Insane uses a shared `CanCollide` door; per-maze waypoint passes; JetPack coupled to Insane; Easy/Insane have no fall volumes). The rebuild is a **new unpublished place** with ten named modules in this git repo, synced via **Rojo**. Player data uses **ProfileStore** (not ProfileService). Maze geometry is baked in Studio and is **not** in git. Two SKUs (All Maps + Insane). First playable is baker + Easy 1 + the run machine (PRs 1–3).
 
 ---
 
@@ -252,10 +254,10 @@ Live anti-patterns: `StarterPlayer.CharacterUseJumpPower = false`; sprint R2 wri
 ### Timer, stats, leaderboards
 
 - Timer: server elapsed; client formats `HH:MM:SS:mmm`. Show personal best if one exists.
-- Profile (ProfileService or equivalent): `{ Things = {}, LastSession = "N/A" }`.
+- Profile (ProfileStore): `{ Things = {}, LastSession = "N/A", BestTimes = {} }`.
 - OrderedDataStore for times and collector counts. Times stored as integer milliseconds.
 - Scopes: `EASY_1`, `EASY_2`, `MILD_1`, `MILD_2`, `HARD_1`, `INSANE_1`, `COLLECTOR`. **Not** `VERTICAL_1`. **No** `PUMPKIN`.
-- Keys: product spec writes `scope/stat/userId`; **implementation** is `GetOrderedDataStore("MazeRunnerStats", scope)` with key `tostring(userId)` so `GetSortedAsync` does not mix boards (see Data stores).
+- Keys: `GetOrderedDataStore("MazeRunnerStats", scope)` with key `tostring(userId)` so `GetSortedAsync` does not mix boards. Live place used composite `scope/stat/userId` in one list — do not copy.
 - Maze boards ascending (fastest first). Collector descending.
 - World boards: six time panels + one Collector panel, top 10, refresh ~60–70 s. No pumpkin board.
 - No per-player debounce that drops legitimate pickups or time saves.
@@ -310,17 +312,30 @@ No per-maze map passes. No breadcrumbs. No `ProcessReceipt` (no developer produc
 
 ## Proposed Design
 
-### Place and tooling (default: Studio-only)
+### Place and tooling (Rojo + unpublished place)
 
-This repo currently contains only markdown. There is no Luau and no Rojo tree. Default for a small rebuild:
+**Luau lives in this git repo and syncs into Studio with Rojo.** Geometry (lobby, connectors, baked boards, Insane climb, mesh templates) lives in an unpublished Studio place. Rojo sets `$ignoreUnknownInstances` on Workspace-adjacent services so `rojo serve` does not delete baked mazes.
 
-**A clean new unpublished place in Roblox Studio**, with ModuleScripts named exactly after the ten modules in `GAME_DESIGN.md` §12. Geometry (lobby, connectors, baked boards, Insane climb) lives in the place file. Git continues to hold design docs; scripts live in the place until a later optional Rojo adoption (see Alternatives).
+| In git (`src/`, `Packages/`) | In the unpublished place |
+|---|---|
+| All ModuleScripts / Scripts / LocalScripts | Lobby, landings, connectors, signs |
+| `MazeConfig`, `Constants`, remotes folder | Baker **output** (`Board*`, FallVolume, EntrancePad) |
+| Maze baker **source** (`src/server/Baker`, RunBake Disabled) | Wall / container MeshPart templates |
+| Vendored **ProfileStore** (`Packages/ProfileStore.luau`) | Dressed hazards, bots, d20, spawn pads, leaderboard panels |
 
-Why not Rojo as default:
+Dev loop:
 
-- Mazes are heavy instance trees (live Insane is 2763 `Wall` parts). Rojo is a poor fit for that geometry.
-- The baker is a Studio command that stamps instances; its output is the place, not a `*.lua` file.
-- Team size is small; the first playable is a baker + one maze, not a multi-repo pipeline.
+1. `cd` this repo and run `rojo serve` (listens on **34873**).
+2. Unpublished place open in Studio → Rojo plugin → connect **`localhost:34873`** (not 34872).
+
+Wally is **not** installed here; do not run `wally install` yet. `wally.toml` records `lm-loleris/profilestore@1.0.3` for later.
+
+```
+src/shared/          → ReplicatedStorage.Shared
+src/server/          → ServerScriptService (Main, Session, MazeRun, …)
+Packages/            → ServerScriptService.Packages (ProfileStore)
+src/client/          → StarterPlayer.StarterPlayerScripts
+```
 
 New place settings (do these once in Studio, PR 1):
 
@@ -333,7 +348,7 @@ New place settings (do these once in Studio, PR 1):
 | `Workspace.StreamingEnabled` | **false** for MVP (one static place; streaming makes hunter pathfinding and fall volumes flaky). Revisit if Insane part count forces it. |
 | `Workspace.FallenPartsDestroyHeight` | Well **below** every maze `FallVolume` (author FallVolumes above this plane so the volume fires first) |
 | `Workspace:GetAttribute("BypassPasses")` | **true** on the unpublished place until PR 14; `TryStart` skips `requiresPass` while true |
-| `Workspace:GetAttribute("UseStudioDataStores")` | **false** by default; when true in Studio, ODS uses real Studio datastores (ProfileService stays `.Mock`) |
+| `Workspace:GetAttribute("UseStudioDataStores")` | **false** by default; when true in Studio, ODS and ProfileStore use real Studio datastores (otherwise ProfileStore `.Mock`) |
 | Only one `SpawnLocation.Enabled` | Main lobby |
 
 Do **not** enable a second place. Do **not** copy live `ServerScriptService` scripts.
@@ -396,7 +411,7 @@ If it is not in this table, it is not in the game. Each is a ModuleScript plus a
 
 | Module | Runtime | Job | Does **not** |
 |---|---|---|---|
-| **Session** | Server | `PlayerAdded` / `PlayerRemoving`; ProfileService load/release; set default attributes; `Joined` analytics once; re-apply movement defaults + Insane door policy on `CharacterAdded`; if `InRun` on respawn, call `WorldNav.TeleportToEntrance` | Flip `InRun`; write BestTime |
+| **Session** | Server | `PlayerAdded` / `PlayerRemoving`; ProfileStore `StartSessionAsync` / `EndSession`; set default attributes; `Joined` analytics once; re-apply movement defaults + Insane door policy on `CharacterAdded`; if `InRun` on respawn, call `WorldNav.TeleportToEntrance` | Flip `InRun`; write ODS BestTime |
 | **MazeRun** | Server | Gate/exit; the **only** writer of `InRun` / `MazeId` / `StartTime`; Fail/Complete; badge; best time; **hunt** spawn/despawn hooks; `HudSync`; secret-badge touch (does not Complete) | Teleport implementation; hazard damage; patrol/drone lifetime |
 | **WorldNav** | Server | Lobby portals (**always** `PivotTo` lobby; Fail only if `InRun`); fall volumes (`PivotTo` EntrancePad, run continues if any); death-to-entrance (called from Session on respawn); Give-up teleport **called by MazeRun** after Fail; d20 `TeleportToPad(mazeId, padId)` | Flip `InRun` itself — it **asks** MazeRun to Fail; listen to `RunFailed` for teleports |
 | **Hazards** | Server | Data-driven: `KillBeam`, `DamagePad`, `TimedFire`, `ProjectileRing`, `MovingPlatform` (safe), `Dice`. One handler per **type**, bound via CollectionService tags + **instance attributes** | Per-part unique Scripts; spawning from `MazeConfig.hazards` |
@@ -405,7 +420,7 @@ If it is not in this table, it is not in the game. Each is a ModuleScript plus a
 | **Monetization** | Server + client shop | All Maps + Insane; prompts; ownership attributes; Insane door policy; map-toggle permission | Per-maze passes; `ProcessReceipt`; JetPack |
 | **Leaderboards** | Server | OrderedDataStore adapter; SurfaceGui top 10; 60–70 s refresh | Pumpkin board; per-player save debounce |
 | **Movement** | Client (+ server spawn defaults) | Walk 25, sprint +10 cap 35, stamina 100/10/10, exhaust 0 resume >60, hold C/L3 crouch **overrides sprint** (16 / JumpPower 0), release restores JumpPower 100 | HUD crouch button; JetPack |
-| **Maze baker** | Studio-only | Command/plugin. Easy 1 first. Not required by Session or MazeRun at runtime | Turrets, fire pads, bots, d20, secrets, lobby |
+| **Maze baker** | Edit-time (`src/server/Baker`, RunBake Disabled) | Command-bar `Bake`. Easy 1 first. Not required by Session or MazeRun at runtime | Turrets, fire pads, bots, d20, secrets, lobby |
 
 Boot order (server init Script `ServerScriptService.Main`). **Require is optional** so PRs 1–13 boot without Monetization / Collectibles / Leaderboards / Hazards / Bots:
 
@@ -443,7 +458,7 @@ Portal `Touched`: `if player:GetAttribute("InRun") then MazeRun.Fail(player, "Lo
 
 ### Suggested instance tree
 
-**Target** tree for the finished MVP. **PR 1 creates only** the folders, `Constants`, `MazeConfig`, empty `Remotes`, `GameEvents`, `Main` (optional `init`), one enabled `SpawnLocation`, and `Workspace.Mazes.EASY_1` empty skeleton. HUD, bots templates, Things, shop prompts, and later mazes land in the PRs that need them.
+**Target** tree for the finished MVP. **Rojo already syncs** `Shared`, `Remotes` (empty folder), SSS modules (`Main`, `Session`, stubs, `Baker`), `Packages.ProfileStore`, and client script stubs. Studio still needs: unpublished place, lobby stub, one enabled `SpawnLocation`, `Workspace.Mazes.EASY_1` skeleton, `BypassPasses`. HUD, bots templates, Things, shop prompts, and later mazes land in later PRs.
 
 ```
 Workspace
@@ -492,14 +507,14 @@ ServerStorage
       Drone                        -- PR 11
     Hazards                        -- PR 5 / PR 10
     Things                         -- PR 13; 8 catalog models
-  Baker                            -- Studio-only; Disabled; PR 2
 
 ServerScriptService
   Main                             -- optional init() from PR 1
   GameEvents
-  -- modules added as their PRs land
+  Session / MazeRun / WorldNav / …
+  Baker                            -- Rojo: src/server/Baker; RunBake Disabled
   Packages
-    ProfileService                 -- PR 3
+    ProfileStore                   -- vendored Packages/ProfileStore.luau
 
 StarterPlayer
   StarterPlayerScripts             -- Movement/HUD/Input: PR 4
@@ -739,29 +754,41 @@ New store names so Studio and the unpublished place cannot clobber live `BotJamM
 
 | Store | Kind | Name | Key | Template / value |
 |---|---|---|---|---|
-| Profile | ProfileService | `MazeRunnerPlayerProfile` | `Player_<userId>` | `{ Things = {}, LastSession = "N/A" }` |
+| Profile | ProfileStore | `MazeRunnerPlayer` | `tostring(userId)` | `{ Things = {}, LastSession = "N/A", BestTimes = {} }` |
 | Stats | OrderedDataStore | `MazeRunnerStats` **per Roblox scope** | `tostring(userId)` | integer ms or count |
 
-**ProfileService.** Third-party module under `ServerScriptService.Packages.ProfileService`. Session:
+**ProfileStore** ([MadStudioRoblox/ProfileStore](https://github.com/MadStudioRoblox/ProfileStore)). Successor to ProfileService. **Not for leaderboards.** Module under `ServerScriptService.Packages.ProfileStore`. Session:
 
 ```lua
-local store = ProfileService.GetProfileStore("MazeRunnerPlayerProfile", {
+local ProfileStore = require(game.ServerScriptService.Packages.ProfileStore)
+local PlayerStore = ProfileStore.New("MazeRunnerPlayer", {
   Things = {},
   LastSession = "N/A",
+  BestTimes = {}, -- [mazeId] = ms; HUD replica
 })
-if RunService:IsStudio() then
-  store = store.Mock   -- Studio sessions never write live data (same policy as live)
+if RunService:IsStudio() and workspace:GetAttribute("UseStudioDataStores") ~= true then
+  PlayerStore = PlayerStore.Mock -- never write live keys from Studio by default
 end
-profile = store:LoadProfileAsync("Player_" .. player.UserId)
+local profile = PlayerStore:StartSessionAsync(tostring(player.UserId), {
+  Cancel = function()
+    return player.Parent ~= Players
+  end,
+})
+if profile == nil then
+  player:Kick("Could not load data — please rejoin")
+  return
+end
+profile:AddUserId(player.UserId)
 profile:Reconcile()
-profile:ListenToRelease(function()
-  player:Kick("Profile released") -- standard ProfileService pattern if still in game
+profile.OnSessionEnd:Connect(function()
+  if player.Parent == Players then
+    player:Kick("Profile session ended — please rejoin")
+  end
 end)
+-- PlayerRemoving: profile.Data.LastSession = DateTime.now():ToIsoDate(); profile:EndSession()
 ```
 
-`LastSession` is stamped `os.date` (or `"N/A"`) on release. `Things[id] = count` is the only inventory.
-
-Best times are **not** duplicated on the profile (spec template is `{ Things, LastSession }`). Session keeps an in-memory cache `bestTimes[mazeId] = ms?` loaded from OrderedDataStore on join (`GetAsync` per maze, 6 calls, each `pcall`ed) so `HudSync` can send PB without waiting on Complete. After a faster `UpdateAsync`, **write the cache immediately** so the next run’s HUD is not stale until rejoin.
+Mutate `profile.Data` in place. Auto-save ~300s. `Things[id] = count` is the inventory. `BestTimes[mazeId]` is a HUD replica; **OrderedDataStore remains leaderboard truth**. On a faster ODS `UpdateAsync`, also write `profile.Data.BestTimes[mazeId]` so the next run’s HUD is not stale.
 
 **OrderedDataStore.** `GetSortedAsync` has **no key-prefix filter**. One unscoped store would interleave every maze’s times with collector counts and cannot be sorted both ascending and descending. Roblox **scope** is the second argument to `GetOrderedDataStore`, not a string in the key.
 
@@ -813,19 +840,19 @@ end)
 
 | Store | When mocked |
 |---|---|
-| ProfileService | **Always** `.Mock` when `RunService:IsStudio()` (never write live `Things`) |
+| ProfileStore | `.Mock` when `IsStudio()` **and** `UseStudioDataStores ~= true` (never write live `Things` by default) |
 | OrderedDataStore | In-memory `StatsStore` iff `(IsStudio() and Workspace:GetAttribute("UseStudioDataStores") ~= true) or game.CreatorId == 0` |
 
 Those two rules do not conflict: profiles never hit production from Studio; ODS can opt into Studio datastores for board-layout testing via `UseStudioDataStores`. Guard `GetAsync` / `UpdateAsync` / `AwardBadge` / `UserOwnsGamePassAsync` in `pcall`. If `badgeId == 0` or pass id `== 0`, skip the call.
 
 **No migration** of live `BotJam*` rows. **New universe, all new IDs** — do not reuse live badges or Insane pass `940187199`. No grandfathering. `MazeConfig.badgeId` / `Passes` stay `0` until PR 14 fills Creator Dashboard IDs.
 
-### Maze baker (Studio-only)
+### Maze baker (edit-time, Rojo source)
 
 A **disabled** command script, not a runtime require. Invoke from the Command Bar:
 
 ```lua
-require(game.ServerStorage.Baker.MazeBaker).Bake("EASY_1")
+require(game.ServerScriptService.Baker.MazeBaker).Bake("EASY_1")
 ```
 
 Re-bake **destroys that maze’s `Board*` folder(s) only**. Entrance, Exit, Arena, Hazards, Bots, FallVolume-if-hand-moved are left alone unless the baker is explicitly restamping FallVolume / gate / exit (flags on the preset).
@@ -993,7 +1020,7 @@ Dressing Easy 1 after bake: clone 3 `KillBeam` templates into `Workspace.Mazes.E
 sequenceDiagram
   participant P as Player
   participant S as Session
-  participant PS as ProfileService
+  participant PS as ProfileStore
   participant M as Monetization
   participant ODS as OrderedDataStore
   participant A as AnalyticsService
@@ -1325,7 +1352,7 @@ Greenfield. No live-row migration in MVP.
 | `Bird` | Blue Bird |
 | `Crystal` | Crystal |
 
-**In-memory session cache** (not persisted beyond ProfileService / ODS):
+**In-memory session cache** (not persisted beyond ProfileStore / ODS):
 
 ```lua
 SessionState[player] = {
@@ -1353,16 +1380,14 @@ Patching would require deleting `MazeGenerator`, breadcrumbs, JetPack, dual exit
 
 ### 2. Studio-only scripts vs Rojo/git-sync
 
-| | **Studio-only (default)** | Rojo (`src/` in this repo) |
+| | Studio-only | **Rojo hybrid (chosen)** |
 |---|---|---|
-| Geometry | Native (baker stamps in place) | Needs a `place.rbxl` sidecar; Rojo is weak on 2k+ part boards |
-| Code review | Place file / Team Create | Real PRs on `.lua` |
+| Geometry | Native (baker stamps in place) | Stays in the unpublished place; `$ignoreUnknownInstances` |
+| Code review | Place file / Team Create | PRs on `src/**/*.luau` |
 | Diff | Opaque | Excellent |
-| Onboarding | Open Studio | Rojo + serve + plugin |
+| Onboarding | Open Studio | Rojo plugin + `rojo serve` |
 
-**Default: Studio-only** with modules named exactly as §12, Team Create or a published-to-group unpublished place as the source of truth for instances.
-
-**Revisit Rojo** when the ten modules exist and we want GitHub review: Rojo-sync **only** `ServerScriptService`, `ReplicatedStorage.Shared`, `ReplicatedStorage.Remotes` (empty folders), `StarterPlayerScripts`, and `ServerStorage.Baker`. Leave `Workspace` / templates / baked boards in the place. That hybrid is the right second step; it is not the first.
+**Chosen: Rojo for Luau, Studio for instances.** Mazes are still a poor fit for git (2k+ parts); they are not in `src/`.
 
 ### 3. Shared Workspace solution clone vs client-local clone vs ServerStorage stream
 
@@ -1385,15 +1410,16 @@ Disabling auto-load and `LoadCharacter` at the maze entrance avoids a 1-frame lo
 
 **Chosen: A (collision groups).** User decision. Not a local clone, not a slide, not shared `CanCollide`. A without a client apply will desync (`CollisionGroup` is not replicated) — so PR 14 **must** apply groups on server **and** local client, including `DescendantAdded`. The run machine remains the real lock.
 
-### 6. ProfileService vs raw DataStores
+### 6. ProfileStore vs ProfileService vs raw DataStores
 
-| | **ProfileService (chosen)** | Raw `DataStoreService` |
-|---|---|---|
-| Session | Load/release, session lock, reconcile | Hand-roll |
-| Studio | `.Mock` so we cannot clobber live | Easy to forget a name prefix |
-| Template | `{ Things, LastSession }` matches spec | Same, more glue |
+| | **ProfileStore (chosen)** | ProfileService | Raw DataStores |
+|---|---|---|---|
+| Status | Current Mad Studio module | Deprecated for new projects | Easy to get session locks wrong |
+| Session | `StartSessionAsync` / `EndSession` | `LoadProfileAsync` / `Release` | None |
+| Studio | `.Mock` on the store | `.Mock` | Easy to hit production keys |
+| Leaderboards | **Not supported** (use ODS) | Not ordered | OrderedDataStore |
 
-Times still go to OrderedDataStore (ProfileService is not ordered). Not worth a custom session lock for one map.
+Times still go to OrderedDataStore. ProfileStore docs: not for global state. Package `lm-loleris/profilestore`; vendored at `Packages/ProfileStore.luau` until Wally is used.
 
 ### 7. Per-player hunt pairs vs two world hunters
 
@@ -1475,7 +1501,7 @@ No percentage rollout; it is one place.
 | Death lobby flash | **Low** | Short `RespawnTime` + immediate `PivotTo` |
 | Same-maze gate retrigger after death | **High** if ignored | `TryStart`: same `mazeId` + `InRun` → **ignore**; EntrancePad past a thin vertical gate; debounce only on Idle→Running |
 | Solution overlay leaked in ReplicatedStorage | **Low** (accepted) | Permission-gated HUD; documented |
-| ProfileService kick-on-release during teleport | **Low** | Standard session wrapping; don’t `Release` except on `PlayerRemoving` |
+| ProfileStore `OnSessionEnd` kick during teleport | **Low** | Only `EndSession` on `PlayerRemoving`; Cancel callback if they left during load |
 
 ---
 
@@ -1483,7 +1509,7 @@ No percentage rollout; it is one place.
 
 1. **New unpublished place, not a patch of 16171071941.** Live scripts, tags, and store names are anti-patterns; the fantasy is copied, the tree is not.
 
-2. **Studio-only default; Rojo is a later hybrid.** Baker output and maze geometry do not belong in git for the first playable. Modules still use the ten names so a later Rojo sync of *scripts only* is mechanical.
+2. **Rojo owns Luau; Studio owns instances.** Baker output and maze geometry do not belong in git. `src/` syncs scripts; `$ignoreUnknownInstances` protects Workspace.
 
 3. **`MazeRun` is the only writer of `InRun` / `MazeId` / `StartTime`.** WorldNav, Hazards, Bots, and the client never flip the run. This is how we avoid the live “death left `InMaze` true and the HUD running for the wrong reason.”
 
@@ -1501,11 +1527,11 @@ No percentage rollout; it is one place.
 
 10. **Two SKUs: All Maps + Insane.** No per-maze waypoint passes. Insane door is **collision groups (option A)**: edit-time `InsaneDoor` / `InsaneOwners` only, `CollisionGroupSetCollidable("InsaneDoor", "InsaneOwners", false)`, apply on **server and local client** including `DescendantAdded`. Not a local clone, not shared `CanCollide`, not a slide. `MazeRun` still checks the **server ownership cache** on `INSANE_1` start/complete so a door exploit cannot badge. `BypassPasses` is true until PR 14.
 
-11. **New datastore names** + ProfileService `.Mock` **always** in Studio. ODS is `GetOrderedDataStore("MazeRunnerStats", scope)` with key `tostring(userId)` — **not** composite `scope/stat/userId` in one unscoped list. Times integer ms; `UpdateAsync` only-if-**faster** (ties are not `isNewBest` — do not use `stored == elapsedMs`); write `bestTimes` cache on a faster write; **no** 10 s debounce. Mock ODS iff `(IsStudio() and not UseStudioDataStores) or CreatorId == 0`. Scope `INSANE_1`, not `VERTICAL_1`. No pumpkin store. `pcall` every external call; skip when id is 0.
+11. **New datastore names** + ProfileStore `.Mock` in Studio unless `UseStudioDataStores`. Store `MazeRunnerPlayer`, key `tostring(userId)`, template `{ Things, LastSession, BestTimes }`. ODS is `GetOrderedDataStore("MazeRunnerStats", scope)` with key `tostring(userId)` — **not** composite keys in one unscoped list. Times integer ms; `UpdateAsync` only-if-**faster** (ties are not `isNewBest`); write profile `BestTimes` on a faster write; **no** 10 s debounce. Mock ODS iff `(IsStudio() and not UseStudioDataStores) or CreatorId == 0`. Scope `INSANE_1`, not `VERTICAL_1`. No pumpkin store. `pcall` every external call; skip when id is 0.
 
 12. **`UseJumpPower = true` always**; WalkSpeed 25; JumpPower 100; sprint Shift **or** R2, cap 35; crouch **hold** C/L3 **overrides sprint** (WalkSpeed 16, JumpPower 0); release restores JumpPower **100**. Stamina drains only while actually sprinting. No HUD crouch button. Re-apply on every `CharacterAdded`.
 
-13. **Maze baker is Studio-only** (disabled command). Recursive backtracker, Easy 1 6×6×2, seed knobbable then locked. Re-bake deletes `Board*` only. Does not stamp hazards/bots/dice/secrets/lobby. Insane may be hand-authored.
+13. **Maze baker is edit-time** (`src/server/Baker`, RunBake Disabled). Recursive backtracker, Easy 1 6×6×2, seed knobbable then locked. Re-bake deletes `Board*` only. Does not stamp hazards/bots/dice/secrets/lobby. Insane may be hand-authored.
 
 14. **Same-maze gate is a no-op while `InRun`.** Death-at-entrance must not Fail+restart. Other-maze gate still Fails then Starts. `GateDebounceSeconds = 1.5` collapses Touched spam on the **Idle→Running** edge only. EntrancePad sits **inside** the maze, past a thin vertical `MazeGate`.
 
@@ -1551,32 +1577,32 @@ Out of scope (do not block MVP, do not decide here):
 - [`/Users/renatoalmeida/Dev/roblox_maze/GAME_LOGIC.md`](/Users/renatoalmeida/Dev/roblox_maze/GAME_LOGIC.md) — live place inventory (`placeId` 16171071941, universe 5585682598). Do not copy scripts, tags, or bugs.
 - [`/Users/renatoalmeida/Dev/roblox_maze/README.md`](/Users/renatoalmeida/Dev/roblox_maze/README.md)
 - Live IDs of record — **inventory only, do not reuse** (new universe): completion badges `437680051584782` (EASY_1), `3303135643125970` (EASY_2), `4069310029355913` (MILD_1), `2975952186957333` (MILD_2), `3987381879139424` (HARD_1), `1846732522957557` (VERTICAL_1); Insane pass `940187199`; ProfileService `BotJamMazePlayerProfile` / ODS `BotJamMazeRunnerStatsStore` — **do not write these store names or IDs from the new place**.
-- ProfileService (Mad Studio / loleris) — third-party, vendored under `ServerScriptService.Packages`.
+- [ProfileStore](https://github.com/MadStudioRoblox/ProfileStore) — `ServerScriptService.Packages.ProfileStore`, vendored `Packages/ProfileStore.luau`. Wally pin `lm-loleris/profilestore@1.0.3` unused until Wally is installed.
 - Roblox `DataStoreService:GetOrderedDataStore(name, scope)`, `OrderedDataStore:GetSortedAsync(ascending, pageSize)`, `MarketplaceService.PromptGamePassPurchaseFinished`, `AnalyticsService:LogCustomEvent` / `LogOnboardingFunnelStepEvent` / `LogFunnelStepEvent`, `Enum.AnalyticsCustomFieldKeys`, `workspace:GetServerTimeNow()`, `PhysicsService:CollisionGroupSetCollidable`, CollectionService. `BasePart.CollisionGroup` is not replicated.
 
 ---
 
 ## PR Plan
 
-Each slice is independently reviewable and, in Studio, independently playable. This repo is not Rojo-synced; treat each row as a **milestone / PR** against the new place (and against this git repo if/when scripts are exported). `Main` uses optional `FindFirstChild` so missing modules do not crash boot. **First playable = PR 1 + PR 2 + PR 3.**
+Each slice is independently reviewable. Luau lands as a git PR in `src/`; Studio-only instance work is a matching place edit. `Main` uses optional `FindFirstChild` so missing modules do not crash boot. **First playable = PR 1 + PR 2 + PR 3.**
 
 Maps to `GAME_DESIGN.md` §14: baker (PR 2) → run machine (PR 3) → HUD (PR 4) → Easy 1 beams (PR 5) → remaining mazes (PR 6–9) → hazards + bots (PR 10–11) → stats (PR 12) → collectibles (PR 13) → SKUs (PR 14).
 
 ### PR 1 — Place bootstrap and shared config
 
-- **Files/components:** new unpublished place **in a new universe**; `Workspace` lobby stub + single enabled `SpawnLocation`; `ReplicatedStorage.Shared.Constants`; `ReplicatedStorage.Shared.MazeConfig` (all six rows, IDs zero, hazards as checklists); `ReplicatedStorage.Remotes` empty folders; `ServerScriptService.Main` (optional `init`), `GameEvents`; `ServerStorage.Templates.Walls.ShippingContainer` (placeholder ok); `StarterPlayer` WalkSpeed 25 / JumpPower 100 / `UseJumpPower` true; `Workspace:SetAttribute("BypassPasses", true)`; folder skeleton `Workspace.Mazes.EASY_1` (Entrance/Exit/Arena empty). **No** StarterGui HUD, **no** bot templates, **no** AchievementsGui.
+- **Files/components:** `default.project.json`, `src/**`, vendored `Packages/ProfileStore.luau`; new unpublished place **in a new universe** connected with the Rojo plugin; lobby stub + single enabled `SpawnLocation`; Shared `Constants` / `MazeConfig`; empty `Remotes`; `Main`, `GameEvents`, stub modules; `StarterPlayer` WalkSpeed 25 / JumpPower 100 / `UseJumpPower` true; `Workspace:SetAttribute("BypassPasses", true)`; folder skeleton `Workspace.Mazes.EASY_1`. **No** StarterGui HUD, **no** bot templates.
 - **Dependencies:** none.
-- **Description:** Empty runnable place with folders and config shape. No gameplay. Locks naming (`INSANE_1`, tag list).
+- **Description:** Empty runnable place with folders and config shape. No gameplay. Locks naming (`INSANE_1`, tag list). **Luau side is in the repo** (`rojo serve` on 34873); Studio still needs the unpublished place + lobby/`EASY_1` skeleton.
 
 ### PR 2 — Maze baker + Easy 1 preset
 
-- **Files/components:** `ServerStorage.Baker.MazeBaker`, `Presets`, `RunBake` (Disabled); recursive backtracker; Easy 1 6×6×2, cellSize 24, wallHeight 10.7, clone-not-union container walls; stamp `Board*`, thin vertical `MazeGate`, **EntrancePad inside past the gate**, `MazeExit`, **void-shell** `FallVolume` (under-floor slab + outer skirts; no overlap with boards/pads/connector; above kill plane), `ReplicatedStorage.MazeSolution.EASY_1` at **world CFrames** with `WorldPivot` = maze origin; Easy landing CFrame origin; seed knob.
+- **Files/components:** `src/server/Baker/MazeBaker.luau`, `Presets.luau`, `RunBake.server.luau` (Disabled); recursive backtracker; Easy 1 6×6×2, cellSize 24, wallHeight 10.7, clone-not-union container walls; stamp `Board*`, thin vertical `MazeGate`, **EntrancePad inside past the gate**, `MazeExit`, **void-shell** `FallVolume` (under-floor slab + outer skirts; no overlap with boards/pads/connector; above kill plane), `ReplicatedStorage.MazeSolution.EASY_1` at **world CFrames** with `WorldPivot` = maze origin; Easy landing CFrame origin; seed knob.
 - **Dependencies:** PR 1.
 - **Description:** Command-bar `Bake("EASY_1")` produces a walkable perfect maze. Re-bake deletes `Board*` only. **No** Session/MazeRun yet — walk in as a ghost. Seed still knobbable.
 
 ### PR 3 — Session + MazeRun + WorldNav on Easy 1 (first playable)
 
-- **Files/components:** `ServerScriptService.Session`, `MazeRun`, `WorldNav`; Player attributes `InRun`/`MazeId`/`StartTime`; gate/exit/fall/lobby-portal handlers; **same-maze gate ignore**; death/fall → EntrancePad + Y offset `PivotTo`; portal always teleports (Fail only if InRun); leave → Fail; `MazeRun/HudSync` + `MazeRun/GiveUp` remotes (HUD can be Output-only); ProfileService vendored with `.Mock` in Studio; analytics APIs as specified (pcall). **`requiresPass` is skipped while `BypassPasses` is true.**
+- **Files/components:** `src/server/Session.luau`, `MazeRun.luau`, `WorldNav.luau`; Player attributes `InRun`/`MazeId`/`StartTime`; gate/exit/fall/lobby-portal handlers; **same-maze gate ignore**; death/fall → EntrancePad + Y offset `PivotTo`; portal always teleports (Fail only if InRun); leave → Fail; `MazeRun/HudSync` + `MazeRun/GiveUp` remotes; ProfileStore `StartSessionAsync` with `.Mock` in Studio; analytics APIs as specified (pcall). **`requiresPass` is skipped while `BypassPasses` is true.**
 - **Dependencies:** PR 2 (needs Easy 1 gate, EntrancePad, exit, fall volume, lobby spawn).
 - **Description:** The run contract on Easy 1: start at gate, complete at exit (alive, matching id), Fail on give-up or lobby portal, death/fall return to **Easy 1 EntrancePad** with original `StartTime`. Analytics `Joined` once. **This plus PR 2 is first playable.**
 
@@ -1648,4 +1674,4 @@ Maps to `GAME_DESIGN.md` §14: baker (PR 2) → run machine (PR 3) → HUD (PR 4
 
 ### Explicitly not in any MVP PR
 
-JetPack, accessory zone, breadcrumbs, tutorial state machine, BGM module, pumpkin datastore, Rojo `src/` tree, live `BotJam*` migration, per-maze waypoint passes, four hunters, d20 explosions, dual exit scripts, shared world hunters as an FPS fallback.
+JetPack, accessory zone, breadcrumbs, tutorial state machine, BGM module, pumpkin datastore, live `BotJam*` migration, per-maze waypoint passes, four hunters, d20 explosions, dual exit scripts, shared world hunters as an FPS fallback.
