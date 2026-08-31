@@ -1,9 +1,9 @@
 # Maze Runner — Game Logic Inventory
 
-Place: **Maze Runner** (`placeId: 16171071941`)
-Studio instance reviewed in Edit mode.
+Place: **Maze Runner** (`placeId: 16171071941`, universe `5585682598`)
+Studio instance reviewed in Edit mode on 2026-08-31.
 
-This document describes what the live place actually does, as implemented. It is the source of truth for a from-scratch rebuild. Legacy, duplicated, and unfinished pieces are called out at the end.
+This document describes what the **live place** actually does. The rebuild spec is **`GAME_DESIGN.md`**. Do not treat this inventory as the target design.
 
 ---
 
@@ -22,7 +22,7 @@ Side systems layered on top:
 - World leaderboards for maze times and collector counts
 - Breadcrumb trail (dev product, incomplete)
 
-There is **no matchmaking, no rounds, no lives economy**. Death respawns at the enabled SpawnLocation (the main lobby spawn). Mazes are always present in the same place; they are not generated at runtime in the live game.
+There is **no matchmaking, no rounds, no lives economy**. Death respawns at the enabled SpawnLocation (the main lobby spawn). Dying does **not** clear `InMaze` or hide the timer HUD — the run is simply not saved. Mazes are always present in the same place; they are not generated at runtime in the live game.
 
 ---
 
@@ -33,23 +33,30 @@ Join
   → spawn in Main Lobby (only enabled SpawnLocation)
   → walk to a difficulty landing
   → touch MazeEntranceTrigger
-       • start stopwatch
+       • set InMaze = true, start stopwatch
        • show HUD timer + personal best
        • show waypoint + crouch buttons
        • HARD_1 only: spawn 4 HunterBots that chase this player
   → navigate maze, avoid hazards
-  → touch MazeExit (must be alive)
+  → touch MazeExit (CollectionService path requires Health > 0)
        • award completion badge
-       • stop timer, save if new best
-       • hide waypoint HUD
+       • set InMaze = false, stop timer, save if new best
+       • hide waypoint HUD (crouch button is left visible)
        • destroy that player's HunterBots
   → emerge in that maze's landing / next-lobby
   → either continue to the next maze or teleport back to Main Lobby
 ```
 
+Death / character despawn:
+
+- Respawn at main lobby `SpawnLocation`
+- HunterBots assigned to that player are destroyed
+- `InMaze` is **not** cleared; the stopwatch coroutine keeps writing `StopTime` until a later maze complete
+- Timer HUD is **not** hidden; a later maze enter overwrites `StartTime`
+
 Onboarding analytics funnel (AnalyticsService):
 
-1. Player Joined
+1. Player Joined — fired from `CharacterScript` on **every `CharacterAdded`**, not once per session
 2. Player Entered Maze
 3. Player Completed Maze
 
@@ -62,26 +69,26 @@ The place is one large static world. Folders under `Workspace`:
 | Folder | Role |
 |---|---|
 | `Lobby` | Hub, shop, connector rooms between mazes |
-| `Mazes` | The six playable mazes + empty `Solution` folder |
-| `Teleport Triggers` | Touch parts that move players in-place or to another experience |
+| `Mazes` | The six playable mazes + empty `Solution` folder (runtime waypoint clones land here) |
+| `Teleport Triggers` | All in-place and cross-place touch teleports, grouped by maze name |
 | `Teleport Target Locations` | Named destination parts used by in-place teleports |
 | `Leaderboard` | World SurfaceGui boards |
-| `Things` | Runtime collectible instances |
-| `ThingSpawnLocation` | 17 spawn pads for collectibles |
-| `Breadcrumbs` | Runtime dropped star trail |
+| `Things` | Runtime collectible instances (starts empty) |
+| `ThingSpawnLocation` | 17 spawn pads for collectibles (all `Rank` = 1) |
+| `Breadcrumbs` | Runtime dropped star trail (starts empty) |
 | `Mechs` | Empty (legacy) |
 | `Tokens` | Empty |
 | `Player Blocker` | Empty at root; some mazes have their own |
-| `Tutorial Assets` | Runtime tutorial clones |
+| `Tutorial Assets` | Runtime tutorial clones (starts empty) |
 | `EasterEggs` | Two Halloween Balloon tools |
 
 ### Hub rooms (`Workspace.Lobby`)
 
-- **Main** — spawn lobby, walls, floor, AccessoryZone (JetPack allowed here)
+- **Main** — spawn lobby. Children: `Wall`, `Floor`, `AccessoryZone` (JetPack bounding cube + zone triggers)
 - **Easy - Landing**, **Easy 1 to 2 Lobby**, **Easy 2 to 3 Lobby**
 - **Mild - Landing**, **Mild 1 to 2 Lobby**, **Mild 2 to 3 Lobby**
 - **Hard - Landing**, **Hard 1 to 2 Lobby**
-- **Insane - Landing**, **Insane 1 to 2 Lobby** — gamepass-gated
+- **Insane - Landing**, **Insane 1 to 2 Lobby** — gamepass-gated (checkpoint + slide eject)
 - **Shop** — Insane gamepass prompt + breadcrumb “Star” bowl
 - **Signs**, **Props**
 
@@ -93,13 +100,29 @@ Named parts under `Workspace.Teleport Target Locations`:
 
 `Lobby`, `Easy 1 Entrance`, `Easy 2 Entrance`, `Easy 2 Lobby`, `Mild 1 Entrance`, `Mild 2 Entrance`, `Mild 2 Lobby`, `Mild 2 Exit`, `Hard 1 Entrance`, `Hard 1 Exit`
 
-Most maze folders also have **TeleportTrap** parts that send a fallen player back to that maze’s entrance. Each maze folder has a **TeleportTrigger** back to `Lobby`.
+### Teleport Triggers (`Workspace.Teleport Triggers`)
 
-One **Other Experiences** trigger teleports to place `13056501521` (cross-place).
+These are **not** inside maze folders. `TeleportManager` iterates every child of every subfolder here.
+
+| Group | Parts |
+|---|---|
+| Easy 1 | `TeleportTrigger` → `Lobby` |
+| Easy 2 | `TeleportTrigger` → `Easy 2 Lobby`; `TeleportTrigger` → `Lobby` |
+| Mild 1 | `TeleportTrigger` → `Lobby`; `TeleportTrigger` → `Mild 2 Lobby`; **8× `TeleportTrap` → `Mild 1 Entrance`** |
+| Mild 2 | **6× `TeleportTrap` → `Mild 2 Entrance`**; `TeleportTrigger` → `Lobby` |
+| Hard 1 | `TeleportTrigger` → `Lobby`; **2× `TeleporTrigger` (typo) → `Hard 1 Entrance`** |
+| Vertical 1 | 2× `TeleportTrigger` → `Lobby` |
+| Other Experiences | `TeleportTrigger` to place `13056501521` (cross-place; shows Teleporting GUI) |
+
+Fall / out-of-bounds traps exist for **Mild 1, Mild 2, and Hard 1 only**. Easy 1, Easy 2, and Insane have no floor-fall `TeleportTrap`. Fall teleports do **not** reset the timer.
 
 ### SpawnLocations
 
-Only `Workspace.SpawnLocation` is **Enabled**. All maze entrance/exit SpawnLocations exist but are disabled (used as visual/physical pads, not Roblox respawn points).
+Only `Workspace.SpawnLocation` is **Enabled**. Disabled pads (visual/physical only):
+
+`SpawnLocation Exit Easy 1`, `SpawnLocation Entrance Easy 2`, `SpawnLocation Exit Mild 1`, `SpawnLocation Mild 2`, `SpawnLocation Hard 1`, `SpawnLocation Entrance Insane`, `SpawnLocation Exit Insane`
+
+`StarterPlayer.CharacterUseJumpPower` is **false** (engine JumpHeight ≈ 7.2). Live WalkSpeed 25 is applied by client `StaminaScript`, not by `StarterPlayer` (WalkSpeed 16).
 
 ---
 
@@ -111,10 +134,10 @@ Internal IDs (used everywhere in scripts / datastores / remotes):
 |---|---|---|---|
 | `EASY_1` | Easy 1 | Two 6×6 crate/container boards | `437680051584782` |
 | `EASY_2` | Easy 2 | Two 6×6 boards + stairs | `3303135643125970` |
-| `MILD_1` | Mild / “a Little Harder” 1 | One 12×12 wall board | `4069310029355913` |
-| `MILD_2` | Mild 2 | Two 12×12 boards + elevator | `2975952186957333` |
-| `HARD_1` | Hard 1 | One 12×12 floor+walls | `3987381879139424` |
-| `VERTICAL_1` | Insane 1 | Tall/vertical board (~2763 wall parts) | `1846732522957557` |
+| `MILD_1` | Mild / “a Little Harder” 1 | One 12×12 wall board (66 `Maze Wall` + 1 `Wall`) | `4069310029355913` |
+| `MILD_2` | Mild 2 | Two 12×12 boards + 2 elevators | `2975952186957333` |
+| `HARD_1` | Hard 1 | One 12×12 floor (516 parts) + walls (573 parts) | `3987381879139424` |
+| `VERTICAL_1` | Insane 1 | Tall/vertical board (**2763** `Wall` parts) | `1846732522957557` |
 
 `ServerConfiguration.MAZES` maps each maze to a waypoint gamepass and (except HARD_1 in config) a completion badge key. HARD_1 still awards a badge from the exit part’s `BadgeId` value.
 
@@ -125,64 +148,77 @@ Each maze folder has a common skeleton:
 - `Arena` — outer walls/floor
 - `Board…` — the actual maze geometry
 - `Bots` — empty, pre-placed patrol bots, or HunterBot spawn pads
-- `Player Blocker` — walls (most mazes)
+- `Player Blocker` — 2–3 walls (EASY_1 has **none**)
 - `Traps` / `Turrets` / `Props` as needed
+
+CollectionService `MazeExit` is on all six exit plates. A duplicate child script `Exit Maze` also exists on **EASY_1, MILD_1, MILD_2 only** (not EASY_2 / HARD_1 / VERTICAL_1). The CollectionService path refuses dead players; the child `Exit Maze` script does **not** check health.
 
 ### EASY_1
 
 - Theme: shipping containers as walls (`BoardCrates6x6` × 2)
-- **Turrets**: 3 turret groups. Beams toggle on/off every 3 seconds. Touching `BeamTrigger` deals **100 damage** (instant kill at default health).
-- **Barrels**: yellow barrels (ooze scripts exist on some; pathing is messy)
-- No bots
+- **Turrets**: 3 turret groups (Beam + BeamTrigger + Turret model). Beams toggle on/off every 3 seconds (first wait 3s, starting **off**). Touching `BeamTrigger` deals **100 damage** (instant kill at default health)
+- **Barrels**: 3 yellow barrels; **one** has `Ooze Script`
+- `Bots` folder empty; no `Player Blocker`; no `Traps` folder
 - Waypoint pass: `WAYPOINTS_EASY_1` (id `705277031`)
-- Solution stored as Arrow models in `ReplicatedStorage.Maze Solution.EASY_1`
+- Solution stored as 9 Arrow models in `ReplicatedStorage.Maze Solution.EASY_1`
 
 ### EASY_2
 
-- Two 6×6 boards with stairs between them
-- **PumpkinTraps** (2): visual fire builds over 15s, then both fire emitters + touch triggers enable for 5s. Touch deals **30 + 30** damage (2s apart).
-- No bots
+- Two 6×6 boards (`Board6x6-1`, `Board6x6-2`) with stairs between them
+- **PumpkinTraps** (2): visual fire builds over 15s (heat/size steps at 5s + 5s + 5s), then both fire emitters + touch triggers enable for 5s. Touch deals **30 + 30** damage (2s apart)
+- `Bots` folder empty
+- No child `Exit Maze` script (CollectionService only)
 - Waypoint pass: `WAYPOINTS_EASY_2` (id `938971066`)
+- Solution is a `Solution` model (36 descendants)
 
 ### MILD_1
 
-- 12×12 `Maze Wall` parts
+- 12×12 board: 66 `Maze Wall` parts + 1 `Wall`
 - **5 DamageTraps**: 100 damage on touch
-- **Turrets**: same 100-damage toggling beams as Easy 1
-- **2 BattleBots**: patrol 4 `Patrol End Points` via PathfindingService. Contact uses a child Trap Script. Ragdoll on death.
-- **d20 dice** trap (see §7)
-- **Jailbreaker** secret at exit (badge `443964865251442`)
+- **Turrets**: **1** turret group, same 100-damage 3s toggle as Easy 1
+- **2 BattleBots**: patrol 4 `Patrol End Points` via the bot `NPC` script / PathfindingService. Contact uses a child Trap Script. The sibling `Pathfinding` script is a leftover that walks to a hardcoded `TEST_DESTINATION`. Ragdoll on death is configured **off** (`RagdollEnabled=false`)
+- **d20 dice** (teleport target: `Mild 1 Entrance`)
+- **Jailbreaker** secret at exit (badge `443964865251442`) — tagged `Jailbreaker`, **no** local `JairbreakerScript`. Touch only awards the badge (does **not** fire `MazeCompleted`)
 - Waypoint pass: `WAYPOINTS_MILD_1` (id `705103513`)
+- Solution: 11 Arrow models
 
 ### MILD_2
 
-- Two 12×12 boards (`Walls` models of ~575 parts, plus a 513-part Floor on board 2)
-- **Elevators** on board 1: PrismaticConstraint ping-pongs every 6 seconds (~-16 to +16). Platform has a Trap Script.
-- **Lasers**: BeamTriggers deal 100 damage (controller does **not** toggle like Easy/Mild 1 — beams appear always-on)
+- Two 12×12 boards: `Board12x12 1` Walls **575** parts + **2 Elevator** models; `Board12x12 2` Walls **576** parts + Floor **513** parts
+- **Elevators**: PrismaticConstraint ping-pongs every 6 seconds (~-16 to +16). Each platform has a Trap Script (**100** damage)
+- **Lasers**: 11 `BeamTrigger` parts, 100 damage. Controller connects touch only — it does **not** toggle like Easy/Mild 1. Beams are always-on
 - **Bots**: 2 GoldBots, 2 BattleBots (patrol), **5 Sci Fi Drones**
 - Drones fire a damaging **ring projectile** every 3s; ring tweens to a Target over 10s and deals **100** on touch
-- d20 dice + 3 Jailbreaker parts (badge `1309464804730436`)
+- d20 dice (teleport target: `Mild 2 Exit`)
+- **3 Jailbreaker** parts (badge `1309464804730436`) — each tagged **and** has `JairbreakerScript`, so they award the secret badge **and** fire `MazeCompleted` (stops the timer)
 - Waypoint pass: `WAYPOINTS_MILD_2` (id `730377265`)
+- Solution: 2 `Solution` models (343 descendants)
 
 ### HARD_1
 
-- 12×12 floor (516) + walls (573)
-- **No pre-placed combat bots.** `Bots` folder has `BotSpawnLocation1` and `BotSpawnLocation2`.
-- On maze enter, **4 HunterBots** are cloned from `ServerStorage.Bots.HunterBot`, assigned `Configuration.Player = player.Name`, and chase that player every 1s via pathfinding. Destroyed on maze complete, character despawn, or player leave.
-- d20 dice, Jailbreaker (badge `2607997495211781`), BattleBot **prop**
+- 12×12 floor (516 parts) + walls (573 parts)
+- **No pre-placed combat bots.** `Bots` folder has `BotSpawnLocation1` and `BotSpawnLocation2`
+- On maze enter, **4 HunterBots** are cloned from `ServerStorage.Bots.HunterBot`, assigned `Configuration.Player = player.Name`, parented under the maze `Bots` folder, and chase that player every **1s** via the bot `NPC` script’s pathfinding. Destroyed on maze complete, character despawn, or player leave. Re-entering after death spawns a fresh set of 4
+- Template leftover: `Configuration.Player` on the ServerStorage HunterBot is set to `ylwfrog`. Template `NPC` is Enabled; `NPC1`, `Pathfinding`, and `SolveMaze` are Disabled
+- d20 dice (teleport target: `Hard 1 Exit`), Jailbreaker (badge `2607997495211781`, tagged **and** has `JairbreakerScript`), BattleBot **prop**
+- No child `Exit Maze` script
 - Waypoint pass: `WAYPOINTS_HARD_1` (id `754828532`)
 - Config has no `COMPLETION_BADGE_ID` key, but the exit plate still awards `3987381879139424`
+- Solution: 1 `Solution` model (156 descendants)
 
 ### VERTICAL_1 (Insane)
 
-- Huge vertical maze (`Board` with thousands of Wall parts)
+- Huge vertical maze (`Board` with **2763** Wall parts)
 - **Gamepass-gated** (`PASSES.VERTICAL_1` / id `940187199`)
-  - Shop proximity prompt in lobby
-  - `GamePassCheckpoint` at Insane landing: if player owns the pass, the checkpoint `CanCollide` becomes false; otherwise it stays solid
-  - Owning the pass also unlocks the **JetPack** accessory button
+  - Shop proximity prompt in lobby (`Workspace.Lobby.Shop.GamePass.Insane 1`)
+  - `GamePassCheckpoint` at Insane landing: invisible (`Transparency = 1`), `CanCollide = true` by default. On touch, if **this** player owns the pass, the part’s `CanCollide` becomes false; if not, it is set true. This is a **shared** part, so one owner can open the barrier for everyone until a non-owner touches it
+  - `Slide.SafeSlide` (`SlideGamepassCheckScript`): if the player does **not** own the pass, they are teleported to `Lobby`. Owners pass through
+  - Owning the pass also unlocks the **JetPack** accessory button (`GamepassAvailable` → `ToolAvailableRemote`)
 - Waypoint pass: `WAYPOINTS_VERTICAL_1` (id `940441143`, tool name “Waypoints Insane 1”)
-- No bots, no traps folder
-- JetPack is **restricted outside AccessoryZone** (Main lobby + Easy landing zone triggers). Leaving the cube unequips it.
+- No bots, no traps folder, no Jailbreaker
+- No child `Exit Maze` script
+- JetPack is **restricted outside AccessoryZone** (see §5)
+- Solution: 1 `Solution` model (414 descendants)
 
 ---
 
@@ -193,7 +229,7 @@ Defaults in `ServerConfiguration`:
 - WalkSpeed **25**
 - JumpPower **100**
 
-`StarterPlayer` still has engine defaults (WalkSpeed 16, JumpPower ~50). Live speed is applied by `StaminaScript` (`humanoid.WalkSpeed = 25`).
+`StarterPlayer` still has engine defaults (WalkSpeed 16, JumpHeight ≈ 7.2, **`CharacterUseJumpPower = false`**). Live speed is applied by `StaminaScript` (`humanoid.WalkSpeed = 25`). Jump power 100 is only forced when a JetPack boost is applied (`humanoid.UseJumpPower = true`).
 
 ### Sprint
 
@@ -207,16 +243,18 @@ Client `StaminaScript`:
 
 ### Crouch
 
-HUD button in maze (shown on maze enter). Fires BindableEvent `Animate`. `UserInput` LocalScript plays animation `rbxassetid://16676342149`, WalkSpeed −9, JumpPower 0. Toggle off resets WalkSpeed to 25 and JumpPower to **50** (not 100 — mismatch with server default). Keyboard C is commented out.
+HUD button in maze (shown on maze enter; **not** hidden on maze complete). Fires BindableEvent `Animate`. `UserInput` LocalScript plays animation `rbxassetid://16676342149`, WalkSpeed −9, JumpPower 0. Toggle off resets WalkSpeed to 25 and JumpPower to **50** (not 100 — mismatch with server default, and `UseJumpPower` is still false so this often does nothing). Keyboard C is commented out.
+
+StarterGui: Crouch **frame** is visible; the image button starts `Visible = false` until maze enter.
 
 ### JetPack accessory
 
 - Template in `ServerStorage.AccessoryTemplates` (`JetPack`, plus Blue/White variants unused by the current attach path)
 - Config: `TOOLS.JetPack` — type ACCESSORY, requires gamepass `940187199`
-- Boost while equipped: WalkSpeed **30**, JumpPower **100**
-- Client HUD button `AccessoriesImageButton` (productName JetPack) fires `AttachAccessoryRemote`
+- Boost while equipped: WalkSpeed **30**, JumpPower **100**, `UseJumpPower = true`
+- Client HUD button `AccessoriesImageButton` (productName JetPack, starts hidden) fires `AttachAccessoryRemote`
 - Server `AccessoryHandler` clones accessory onto character, unequips any previous accessory sharing the same Attachment name, applies boost via `BoostPlayer`
-- `AccessoryRestrictor` keeps it inside a bounding cube defined by `AccessoryBoundaryMark` parts. ZoneTrigger touch: inside cube → restore tool UI; outside → unequip + hide
+- `AccessoryRestrictor` keeps it inside an axis-aligned cube built from `AccessoryBoundaryMark` parts (4 marks under `Lobby.Main.AccessoryZone`, each tagged twice). `ZoneTrigger` parts: 5 in Main AccessoryZone + 1 in `Easy - Landing`. Touching a zone trigger: inside cube → restore tool UI; outside → unequip + hide button
 
 ---
 
@@ -224,7 +262,7 @@ HUD button in maze (shown on maze enter). Fires BindableEvent `Animate`. `UserIn
 
 ### Per-run timer
 
-On player join, `CharacterScript` fires `SetupTimer`. `MazeStats` creates `ReplicatedStorage.Timer/<PlayerName>` with `StartTime` and `StopTime` StringValues.
+On player join (`CharacterAdded`), `CharacterScript` fires `SetupTimer`. `MazeStats` creates `ReplicatedStorage.Timer/<PlayerName>` with `StartTime` and `StopTime` **StringValues** (they store `tick()` as a string).
 
 On maze enter:
 
@@ -233,13 +271,15 @@ On maze enter:
 - coroutine writes `tick()` into StopTime every 0.5s while `InMaze`
 - client is sent personal best via `ShowTimerRemote`
 
-On maze complete:
+On maze complete (`MazeCompleted` bindable):
 
 - `InMaze = false`
 - elapsed = stop − start
 - if elapsed < previous best (or no previous), save as BestTime
 
 Client `TimerScript` listens to StopTime.Changed and formats `HH:MM:SS:mmm`. Shows “Best: …” if best > 0.
+
+Death / leave does **not** fire `MazeCompleted`, so the live timer can keep running in the lobby.
 
 ### Persistence (OrderedDataStore)
 
@@ -254,15 +294,23 @@ Times are stored as **milliseconds** (`math.round(seconds * 1000)`) so OrderedDa
 - Maze boards: **ascending** (fastest first)
 - Collector / Pumpkin boards: **descending** (most first)
 
-`PlayerStats` exposes BindableFunctions: `GetStatsFunction`, `SaveStatsFunction`, `GetTop10Function`, plus `IncrementStats` (10s debounce per player).
+`PlayerStats` exposes BindableFunctions: `GetStatsFunction`, `SaveStatsFunction`, `GetTop10Function`, plus `IncrementStats` (10s debounce **per player**, not per stat — a second collectible inside 10s will not increment the ordered store).
 
 ### World leaderboards
 
 `Workspace.Leaderboard` panels, refreshed every **70s**:
 
-- Easy 1, Easy 2, Mild 1, Mild 2, Hard 1, Insane 1 (times)
-- Collector (COLLECTOR count)
-- There is a PUMPKIN datastore but **no pumpkin leaderboard panel**
+| Panel | `MazeId` |
+|---|---|
+| Easy 1 Leaderboard Panel | `EASY_1` |
+| Easy 2 Leaderboard Panel | `EASY_2` |
+| Mild 1 Leaderboard Panel | `MILD_1` |
+| Mild 2 Leaderboard Panel | `MILD_2` |
+| Hard 1 Leaderboard Panel | `HARD_1` |
+| Insane 1 Leaderboard Panel | `VERTICAL_1` |
+| Collector Leaderboard Panel | `COLLECTOR` |
+
+There is a PUMPKIN datastore but **no pumpkin leaderboard panel**. `Leaderboard` would treat `PUMPKIN` as descending if such a panel existed.
 
 Each panel has a `MazeId` StringValue and a SurfaceGui with Names/Score/Photos slots 1–10.
 
@@ -286,11 +334,11 @@ In Studio, the store is **mocked** (`ProfileStore.Mock`), so Studio sessions do 
 
 1. Destroy all current Things
 2. Wait cooldown (20s live / 2s Studio)
-3. Spawn **8** things, weighted by rarity, onto unused `ThingSpawnLocation` pads (rank-weighted)
+3. Spawn **8** things, weighted by rarity, onto unused `ThingSpawnLocation` pads (rank-weighted; every pad’s Rank is 1, so this is uniform)
 4. Stay spawned for 120s live / 5s Studio
 5. Repeat
 
-Catalog (`ThingTemplates`):
+Catalog (`ThingTemplates` in ServerStorage + rarity table in `ThingSpawn`):
 
 | Key | Display | Rarity | Tag |
 |---|---|---|---|
@@ -307,9 +355,17 @@ Catalog (`ThingTemplates`):
 | Pumpkin2 / 3 / 4 | Pumpkin 2–4 | 0.10 each | pumpkin |
 | PumpkinFace | Pumpkin Face | 0.05 | pumpkin |
 
-Templates are tagged `Thing`. `CollectionController` listens for `Thing` touch → destroy model, fire `ThingCollected`, increment COLLECTOR or PUMPKIN count.
+The **`ThingPart`** child of each template is tagged `Thing` (not the model). On spawn, pumpkin items also get CollectionService tag `pumpkin` on that `ThingPart`.
 
-Achievements HUD (`AchievementsScript`) lists every catalog item, greys out uncollected, shows checkmark + count for collected. Always visible from Tools GUI (not maze-gated).
+`CollectionController` listens for `Thing` touch → destroy ancestor model, fire `ThingCollected`, increment COLLECTOR or PUMPKIN ordered-store count.
+
+Pumpkin profile split is **broken**:
+
+- `CollectionController` fires `ThingCollected` with the listener tag `"Thing"` (not `"pumpkin"`) even for pumpkins
+- `CharacterScript` writes to profile `Pumpkins` only if the event tag equals `"Pumpkin"` (capital P)
+- Result: every pickup, pumpkin or not, goes into profile `Things`. OrderedDataStore `PUMPKIN` still increments when the part has tag `pumpkin`
+
+Achievements HUD (`AchievementsScript`) lists every catalog key, greys out uncollected, shows checkmark + count for collected. Labels use the **internal key** (`PinkJiffy`), not the display name. Always reachable from Tools GUI (not maze-gated). Item-detail / BuyNow frame exists unused.
 
 ---
 
@@ -329,6 +385,8 @@ Achievements HUD (`AchievementsScript`) lists every catalog item, greys out unco
 
 Purchase flow: HUD waypoint button or shop prompt → `GamePassRemoteFunction` / `GamepassRequestFunction` → `MarketplaceService:PromptGamePassPurchase` if not owned → return ownership bool.
 
+On character spawn, `CharacterScript` always fires `GamepassAvailable` for id `940187199`; `GamepassController` then shows the JetPack button only if owned.
+
 ### Waypoints (paid map)
 
 On maze enter, waypoint button appears and is bound to that maze id (`productName`). Click:
@@ -336,17 +394,22 @@ On maze enter, waypoint button appears and is bound to that maze id (`productNam
 1. Prompt/check the maze’s waypoint pass
 2. If owned, clone `ReplicatedStorage.Maze Solution.<MAZE_ID>` into `Workspace.Mazes.Solution` (toggle: click again destroys it)
 
-Easy/Mild 1 solutions are **Arrow** models. Mild 2 / Hard / Easy 2 / Vertical are **Solution** path parts.
+Easy 1 / Mild 1 solutions are **Arrow** models. Easy 2 / Mild 2 / Hard 1 / Vertical 1 are **Solution** path models.
 
 TopbarPlus dropdown for buying all maps is **commented out** in `GUISetup`.
 
 ### Insane + JetPack
 
-Lobby shop part `Insane 1` (gamepassId 940187199). Checkpoint barrier at Insane landing. Owning the pass fires `GamepassAvailable` → client shows JetPack button and disables the lock SurfaceGui.
+Lobby shop part `Insane 1` (gamepassId 940187199). Two gates at Insane landing:
+
+1. Invisible `GamePassCheckpoint` collision barrier (shared `CanCollide`)
+2. `Slide.SafeSlide` that teleports non-owners to `Lobby`
+
+Owning the pass fires `GamepassAvailable` → client shows JetPack button and disables the lock SurfaceGui on `GamePassLockSign`.
 
 ### Breadcrumbs (unfinished)
 
-Shop model `Star` with productId `"Star"`. Client `BuyTool` fires `PurchaseDevProduct` RemoteEvent. Server `BreadcrumbsHandler` treats **any** that event as “reload breadcrumbs”: add 30, cap 100, stored as `IntValue BreadcrumbAmount` on the character (not persisted).
+Shop model `Star` with productId `"Star"`. Client `BuyTool` (RunContext Client) fires `PurchaseDevProduct` RemoteEvent. Server `BreadcrumbsHandler` treats **any** that event as “reload breadcrumbs”: add 30, cap 100, stored as `IntValue BreadcrumbAmount` on the character (not persisted).
 
 While amount > 0, every 2s if the player moved > 1 stud, clone a Star mesh into `Workspace.Breadcrumbs`.
 
@@ -358,21 +421,34 @@ There is **no MarketplaceService.ProcessReceipt** handler in the place, so a rea
 
 ### d20 dice (`CollectionService` tag `d20`)
 
-Present in MILD_1, MILD_2, HARD_1 trap folders.
+Present in MILD_1, MILD_2, HARD_1 trap folders (one model each). Each model is tagged **twice**, so `d20Trigger` connects twice.
 
-Touch → wait until the die stops → read the highest-Y face:
+Touch any face part → wait until the die stops → read the highest-Y face with attribute `Face`:
 
 - Faces **1, 2, 3** → Explosion (BlastRadius 60) then destroy the die
 - Faces **18, 19, 20** → teleport using the die’s `Teleport_Target_Place_ID` / `Teleport_Target_Location`, then destroy
+  - MILD_1 → `Mild 1 Entrance`
+  - MILD_2 → `Mild 2 Exit`
+  - HARD_1 → `Hard 1 Exit`
 - Other faces: nothing
+
+Place ID is `0` on all three, so these are in-place `MoveTo` teleports.
 
 ### Jailbreaker
 
-Hidden parts at MILD_1 / MILD_2 / HARD_1 exits. Touch awards a **secret badge** (ids in §4) and also fires `MazeCompleted` (so it can stop the timer as if the maze were finished). Dual implementation: CollectionService `JailbreakerTrigger` **and** local `JairbreakerScript` on the parts.
+Hidden parts at MILD_1 / MILD_2 / HARD_1 exits. CollectionService tag is **`Jailbreaker`** (not `JailbreakerTrigger`).
+
+| Maze | Tagged parts | Local `JairbreakerScript` | On touch |
+|---|---|---|---|
+| MILD_1 | 1 | no | badge only |
+| MILD_2 | 3 | yes (all 3) | badge + `MazeCompleted` |
+| HARD_1 | 1 | yes | badge + `MazeCompleted` |
+
+The CollectionService handler (`JailbreakerTrigger` script) **only awards the badge**. `MazeCompleted` (timer stop / hunter cleanup) is fired only by the misspelled local `JairbreakerScript`.
 
 ### Fall / out-of-bounds
 
-`TeleportTrap` parts around mazes `MoveTo` the player back to that maze’s entrance target. These do **not** reset the timer.
+`TeleportTrap` / `TeleporTrigger` parts under `Workspace.Teleport Triggers` `MoveTo` the player back to that maze’s entrance (or Hard 1 Entrance). These do **not** reset the timer. See the table in §3 — Easy 1 / Easy 2 / Insane have none.
 
 ---
 
@@ -384,7 +460,7 @@ Hidden parts at MILD_1 / MILD_2 / HARD_1 exits. Touch awards a **secret badge** 
 2. `Beam to Gates` complete → skip “Fire to Paint Tile”, jump to “Get the Battery”
 3. `Get the Battery` complete → hide
 
-`ReplicatedFirst.Tutorials` still has UI frames for all three. Nothing in the current join flow fires the initial `Tutorial` event, so this likely never starts for new players.
+`ReplicatedFirst.Tutorials` still has UI frames for all three. Nothing in the current join flow fires the initial `Tutorial` event, so this never starts for new players.
 
 ---
 
@@ -393,17 +469,19 @@ Hidden parts at MILD_1 / MILD_2 / HARD_1 exits. Touch awards a **secret badge** 
 | ScreenGui | When | Contents |
 |---|---|---|
 | Teleporting | Cross-place teleport | Full-screen “Teleporting” label |
-| Tools | Always | Waypoints (maze only), Crouch (maze only), Achievements, Accessories/JetPack (pass + zone) |
-| Timer | Maze run | Live time + best time |
+| Tools | Always | Waypoints (shown on maze enter, hidden on complete), Crouch (shown on maze enter, **not** hidden on complete), Achievements (always), Accessories/JetPack (pass + zone) |
+| Timer | Maze run | Live time + best time (not hidden on death or complete) |
 | AchievementsGui | Toggle | Collection grid + unused item-detail / BuyNow frame |
 
-`GUIConfiguration` has a unused score-image set (P_0 … P_100). Stamina has **no HUD bar**.
+`GUIConfiguration` has an unused score-image set (P_0 … P_100). Stamina has **no HUD bar**.
 
 ---
 
 ## 12. Audio
 
-`RandomMusicPlayer` cycles a list of 7 SoundIds on `SoundService.BackgroundMusic`. The wait-between-tracks is set to **2 seconds** (comment says 5 minutes). It waits until the current track stops, then picks another.
+`RandomMusicPlayer` cycles a list of 7 SoundIds on `SoundService.BackgroundMusic`. Outer loop interval is **2 seconds** (comment says 5 minutes), but `playRandomMusic` first polls every **5s** until the current track is not `Playing`, then picks another and plays it. Net effect: next track starts shortly after the current one ends, not every 2 seconds.
+
+Track ids: `1837560230`, `1836842889`, `5410086218`, `1846368080`, `7024220835`, `1847661821`, `72215777970446`.
 
 ---
 
@@ -416,7 +494,7 @@ Hidden parts at MILD_1 / MILD_2 / HARD_1 exits. Touch awards a **secret badge** 
 
 Owner user id in config: `3757284903`.
 
-Character flag attributes: `IsAlive`, `InMaze`.
+Character / player flag attributes: `IsAlive` (on player, set true on spawn, false on despawn/leave), `InMaze` (on player).
 
 ---
 
@@ -427,20 +505,21 @@ Character flag attributes: `IsAlive`, `InMaze`.
 | Script | Job |
 |---|---|
 | `ServerConfiguration` | Speeds, pass ids, badge ids, maze table, JetPack boost |
-| `CharacterScript` | Profile init, join funnel, collectible writes, boost apply |
+| `CharacterScript` | Profile init, join funnel (per spawn), collectible writes, boost apply |
 | `PlayerDataHandler` | ProfileService wrapper |
 | `PlayerStats` + `DSHelper` | OrderedDataStore I/O |
 | `MazeEntranceTrigger` / `MazeExit` | Tag-based enter/exit |
 | `MazeStats` | Timer + best-time save |
 | `Leaderboard` | World boards |
-| `TeleportManager` + `SafeTeleport` | Touch teleports |
+| `TeleportManager` + `SafeTeleport` | Touch teleports under `Workspace.Teleport Triggers` |
 | `ThingSpawn` + `CollectionController` | Collectible spawn/pickup |
 | `HunterBotHandler` | Per-player hunter bots on HARD_1 |
 | `GamePassPurchaseHandler` + `GamepassController` | Pass prompts + JetPack unlock |
 | `AccessoryHandler` + `AccessoryRestrictor` | Equip / zone |
 | `BadgeHandler` (module + script) | Award on `AwardBadge` bindable |
 | `BreadcrumbsHandler` | Star trail |
-| `JailbreakerTrigger` / `d20Trigger` | Tagged secrets/hazards |
+| `JailbreakerTrigger` | Tag `Jailbreaker` → badge only |
+| `d20Trigger` | Tagged dice |
 | `TutorialHandler` | Unused tutorial state machine |
 | `RandomMusicPlayer` | BGM |
 | `MazeGenerator` / `MazeGenerator Orig` | Offline image-to-maze builders (see below) |
@@ -449,11 +528,11 @@ Character flag attributes: `IsAlive`, `InMaze`.
 ### Client
 
 - `StarterCharacterScripts`: `StaminaScript`, `GUISetup`, `UserInput`, `TimerScript`
-- Tools LocalScripts: waypoints, crouch, achievements
+- Tools LocalScripts: `WaypointScript`, `CrouchingScript`, `AchievementsScript`
 
-### Per-instance (cloned with the maze)
+### Per-instance (cloned with the maze / lobby)
 
-Turret controllers, trap scripts, lift scripts, BattleBot/GoldBot/HunterBot NPC+pathfinding+trap, drone FireScript, shop prompts, Insane checkpoint.
+Turret controllers, trap scripts, lift scripts, BattleBot/GoldBot/HunterBot NPC+pathfinding+trap, drone FireScript, shop prompts, Insane checkpoint + slide eject.
 
 Bots live as templates in `ServerStorage.Bots` (`BattleBot`, `HunterBot`) and as already-placed copies inside Mild mazes.
 
@@ -478,18 +557,21 @@ They parent into `Workspace.Mazes.Folder`, which **does not exist** in the live 
 - Hub → maze → landing → next maze physical layout
 - Six mazes with the identities, badges, and gamepasses above
 - Enter = start timer + HUD; Exit (alive) = badge + best time
-- HARD_1 hunter bots (4, chase the entering player, despawn after)
+- HARD_1 hunter bots (4, chase the entering player every 1s, despawn on complete / death / leave)
 - Waypoint overlay gated per maze
-- Insane gate + JetPack + zone restriction
+- Insane gates (shared collision checkpoint **and** slide-eject to Lobby) + JetPack + zone restriction
 - Collectibles + collector leaderboard
 - World time leaderboards
 - Sprint with stamina
-- Hazard types: kill beams, damage pads, pumpkin fire, drone rings, d20, fall teleports back to entrance
+- Hazard types: kill beams, damage pads, pumpkin fire, drone rings, d20, fall teleports back to entrance (Mild/Hard only)
 
 ### Duplicated (pick one in the rebuild)
 
-- Maze exit is handled **twice**: CollectionService `MazeExit` **and** a child `Exit Maze` script on each plate. Same for Jailbreaker.
-- `BadgeHandler` exists as both ModuleScript and Script (the Script requires the Module and connects the bindable — that part is fine, the dual exit firing is not).
+- Maze exit is handled **twice** on EASY_1 / MILD_1 / MILD_2: CollectionService `MazeExit` **and** child `Exit Maze` (no health check). EASY_2 / HARD_1 / VERTICAL_1 are CollectionService only
+- Jailbreaker: CollectionService tag `Jailbreaker` (badge only) **and** local `JairbreakerScript` on MILD_2 / HARD_1 (badge + maze complete). MILD_1 is tag-only
+- `BadgeHandler` exists as both ModuleScript and Script (the Script requires the Module and connects the bindable — that part is fine, the dual exit firing is not)
+- Each d20 model is CollectionService-tagged twice
+- HunterBot has unused `NPC1` / `Pathfinding` / `SolveMaze` scripts on the template
 
 ### Broken / incomplete (do not copy blindly)
 
@@ -497,20 +579,27 @@ They parent into `Workspace.Mazes.Folder`, which **does not exist** in the live 
 - Tutorial never starts
 - TopbarPlus shop UI is commented out
 - Stamina bar assets exist in `GUIConfiguration` but are unused
-- Crouch restores JumpPower 50, not 100
+- Crouch restores JumpPower 50, not 100, and `UseJumpPower` is false by default
 - Sprint gamepad branch is logically wrong
-- `RandomMusicPlayer` interval is 2 seconds, not 5 minutes
+- `RandomMusicPlayer` interval constant is 2 seconds (comment says 5 minutes); actual gap is “until current track ends”
 - HARD_1 completion badge missing from `ServerConfiguration.MAZES` but present on the part
+- Pumpkin counts increment the ordered store but are never written to profile `Pumpkins` (tag mismatch)
+- `IncrementStats` 10s debounce is per-player, so two pickups inside 10s only count once on the collector board
+- Death does not clear `InMaze` or hide the timer
+- Analytics “Player Joined” fires on every respawn
+- `GamePassCheckpoint.CanCollide` is global, not per-player
 - Pumpkin counts are stored but have no leaderboard panel
 - `MazeGenerator*` and `Draft` are editor leftovers
 - ProfileService is mocked in all Studio sessions
 - `Tokens`, `Mechs`, `Workspace.Breadcrumbs` start empty; MechTemplates exist but nothing spawns them (`SpawnMechRemote` is unused)
-- `TODO` script is a one-line note: “Reward users for completing your core loop with feedback, currency, items, and achievements.” There is **no currency**.
+- `TODO` script is a one-line note: “Reward users for completing your core loop with feedback, currency, items, and achievements.” There is **no currency**
+- Easy 1 / Easy 2 / Insane have no fall-respawn traps
+- Hard 1 fall parts are named `TeleporTrigger`
 
 ### Suggested rebuild modules (names only, not a commitment)
 
 1. **Session / Player** — join, profile, attributes
-2. **MazeRun** — enter, timer, exit, badge, best time
+2. **MazeRun** — enter, timer, exit, badge, best time (clear timer on death)
 3. **WorldNav** — lobby teleports, fall-respawn to entrance
 4. **Hazards** — beams, pads, projectiles, dice (data-driven)
 5. **Bots** — patrol vs hunt, per-maze config
@@ -528,13 +617,12 @@ A rebuilt version that “does what this game does” should let a player:
 1. Spawn in a shared lobby with signs pointing to Easy / Mild / Hard / Insane
 2. Enter Easy 1, get a live timer, reach the exit, get a badge, see time on a world board
 3. Continue through Easy 2, Mild 1, Mild 2, Hard 1 in connector lobbies
-4. Die to turrets / traps and respawn in the main lobby (timer lost)
-5. Fall off a maze and be put back at that maze’s entrance (timer keeps running)
+4. Die to turrets / traps and respawn in the main lobby (run is not saved; current live code also leaves the timer HUD running)
+5. Fall off Mild/Hard mazes and be put back at that maze’s entrance (timer keeps running). Easy/Insane have no equivalent floor traps
 6. Buy a map gamepass and toggle a solution overlay for the maze they are in
-7. On Hard 1, be chased by hunter bots that disappear when they finish or leave
-8. Find jailbreaker secrets on Mild/Hard exits for extra badges
-9. Be blocked from Insane until they own the Insane gamepass; then use a JetPack in the allowed lobby zone
+7. On Hard 1, be chased by hunter bots that disappear when they finish, die, or leave
+8. Find jailbreaker secrets on Mild/Hard exits for extra badges (Mild 2 / Hard 1 also stop the timer; Mild 1 does not)
+9. Be blocked from Insane until they own the Insane gamepass (collision checkpoint + slide that boots non-owners to the lobby); then use a JetPack in the allowed lobby zone
 10. Pick up world collectibles that persist and show in an Achievements/collection panel
 11. See top-10 fastest times per maze and top collectors on lobby boards
 12. Sprint with a stamina limit
-)
