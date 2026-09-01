@@ -185,22 +185,42 @@ local function makePart(name: string, parent: Instance, size: Vector3, cframe: C
 	return p
 end
 
-local function ensureWallTemplate(cellSize: number, wallHeight: number, thickness: number): Model
+local function templateFits(model: Model, cellSize: number, wallHeight: number, thickness: number): boolean
+	local primary = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+	if not (primary and primary:IsA("BasePart")) then
+		return false
+	end
+	return math.abs(primary.Size.X - cellSize) < 0.05
+		and math.abs(primary.Size.Y - wallHeight) < 0.05
+		and math.abs(primary.Size.Z - thickness) < 0.05
+end
+
+local function ensureWallTemplate(name: string, cellSize: number, wallHeight: number, thickness: number): Model
 	local templates = ensureFolder(ServerStorage, "Templates")
 	local walls = ensureFolder(templates, "Walls")
-	local existing = walls:FindFirstChild("ShippingContainer")
-	if existing and existing:IsA("Model") then
-		local primary = existing.PrimaryPart or existing:FindFirstChild("Shell")
-		if primary and primary:IsA("BasePart") then
-			if
-				math.abs(primary.Size.X - cellSize) < 0.05
-				and math.abs(primary.Size.Y - wallHeight) < 0.05
-				and math.abs(primary.Size.Z - thickness) < 0.05
-			then
-				return existing
-			end
-		end
+	local existing = walls:FindFirstChild(name)
+	if existing and existing:IsA("Model") and templateFits(existing, cellSize, wallHeight, thickness) then
+		return existing
+	end
+	if existing then
 		existing:Destroy()
+	end
+
+	if name ~= "ShippingContainer" then
+		local model = Instance.new("Model")
+		model.Name = name
+		local shell = makePart(
+			"Shell",
+			model,
+			Vector3.new(cellSize, wallHeight, thickness),
+			CFrame.new(),
+			Color3.fromRGB(92, 88, 82),
+			Enum.Material.Slate
+		)
+		model.PrimaryPart = shell
+		model.WorldPivot = CFrame.new()
+		model.Parent = walls
+		return model
 	end
 
 	local model = Instance.new("Model")
@@ -278,6 +298,11 @@ local function resolveOrigin(preset, mazeFolder: Folder): Vector3?
 	local stored = mazeFolder:GetAttribute("BakeOrigin")
 	if typeof(stored) == "Vector3" then
 		return stored
+	end
+
+	if preset.mazeId ~= "EASY_1" then
+		warn(`[MazeBaker] baker origin unset: set BakeOrigin on Workspace.Mazes.{preset.mazeId}`)
+		return nil
 	end
 
 	local lobby = workspace:FindFirstChild("Lobby")
@@ -685,7 +710,7 @@ function MazeBaker.Bake(mazeId: string)
 	local entrance: Coord = { x = math.floor((w + 1) / 2), z = 1 }
 	local exit: Coord = { x = entrance.x, z = h }
 
-	local template = ensureWallTemplate(preset.cellSize, preset.wallHeight, preset.wallThickness)
+	local template = ensureWallTemplate(preset.wallTemplate or "ShippingContainer", preset.cellSize, preset.wallHeight, preset.wallThickness)
 
 	clearBoards(mazeFolder)
 	ensureFolder(mazeFolder, "Entrance")
@@ -707,6 +732,7 @@ function MazeBaker.Bake(mazeId: string)
 	local stairs: Coord? = nil
 	local pathL1: { Coord }
 	local pathL2: { Coord }? = nil
+	local connector = preset.layerConnector or (if layers >= 2 then "stairs" else "none")
 	if layers >= 2 then
 		local northGoal: Coord = { x = exit.x, z = h }
 		local unique = bfs(grids[1], w, h, entrance, northGoal)
@@ -721,12 +747,17 @@ function MazeBaker.Bake(mazeId: string)
 		local board = Instance.new("Folder")
 		board.Name = `Board{layer}`
 		board.Parent = mazeFolder
-		local skip = if layer == 2 and stairs then stairs else nil
+		local skip = if layer == 2 and stairs and connector ~= "none" then stairs else nil
 		stampFloorsAndWalls(board, grids[layer], preset, origin, layer, template, skip)
 	end
 
-	if stairs and layers >= 2 then
+	if stairs and layers >= 2 and connector == "stairs" then
 		stampStairs(mazeFolder:FindFirstChild("Board1") :: Folder, mazeFolder:FindFirstChild("Board2") :: Folder, origin, preset, stairs)
+	end
+	if stairs then
+		mazeFolder:SetAttribute("LayerLinkX", stairs.x)
+		mazeFolder:SetAttribute("LayerLinkZ", stairs.z)
+		mazeFolder:SetAttribute("LayerConnector", connector)
 	end
 
 	stampPlates(mazeFolder, origin, preset, entrance, exit)

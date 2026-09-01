@@ -12,9 +12,9 @@ Rebuild of the live Maze Runner place (`16171071941`). **Rojo** owns Luau; an un
 
 ## Status
 
-Rojo project is scaffolded: stub modules, ProfileStore session load, Easy 1 baker **not** implemented yet. First playable is still baker + Session/MazeRun/WorldNav (`DESIGN.md` PRs 1–3).
+**PRs 1–8 done** (see `DESIGN.md` PR Plan). First playable is live: Easy 1–2, Mild 1–2, and Hard 1 are baked runs with the run contract, HUD, Easy 1 kill beams, and unwired Mild/Hard dress (dice pads, secrets, waypoints, BotSpawns). Next is PR 9 (Insane blockout).
 
-New unpublished place, **new universe**, new badge/pass IDs. No JetPack in MVP.
+Unpublished place **135988241030750**, universe **10764621894**. New badge/pass IDs. No JetPack in MVP. Place-native version notes: disabled `ServerScriptService.DevLog`.
 
 ## Tooling
 
@@ -48,6 +48,6 @@ Studio: ProfileStore uses `.Mock` unless `Workspace.UseStudioDataStores == true`
 src/shared/Constants.luau MazeConfig.luau
 src/server/Main.server.luau Session.luau MazeRun.luau WorldNav.luau …
 src/server/Baker/          Studio command (RunBake Disabled)
-src/client/                Movement / Input / HUD stubs
+src/client/                Movement / Input / HUD / HudGuis
 Packages/ProfileStore.luau
 ```

@@ -4,14 +4,14 @@
 |---|---|
 | **Author** | Grok (design-doc-writer) |
 | **Date** | 2026-08-31 |
-| **Status** | In progress — Rojo + ProfileStore scaffolded |
-| **Place** | New unpublished Roblox place (not a patch of live `placeId` 16171071941) |
+| **Status** | In progress — PRs 1–8 done; next PR 9 Insane blockout |
+| **Place** | Unpublished `placeId` 135988241030750, universe 10764621894 (not a patch of live `16171071941`) |
 | **Product spec** | [`GAME_DESIGN.md`](/Users/renatoalmeida/Dev/roblox_maze/GAME_DESIGN.md) — locked |
 | **Live inventory** | [`GAME_LOGIC.md`](/Users/renatoalmeida/Dev/roblox_maze/GAME_LOGIC.md) — constraints and anti-patterns only |
 
 This document restates the locked product, specifies how we build it (Rojo Luau + unpublished place geometry + ProfileStore), and sequences the work as independently shippable PRs. It does not invent gameplay. JetPack is out of MVP.
 
-**In the repo now:** `default.project.json` (`servePort` **34873**), `src/` stubs, `src/server/Session.luau` (ProfileStore), vendored `Packages/ProfileStore.luau`. Baker `Bake` is not implemented. The Studio plugin needs `rojo serve` running or it reports “server not running”. 21 Days keeps `localhost:34872`.
+**In the repo now:** `default.project.json` (`servePort` **34873**), baker (`Bake("EASY_1"|"EASY_2"|"MILD_1"|"MILD_2"|"HARD_1")`), Session / MazeRun / WorldNav, KillBeam Hazards, client Movement / HUD. Vendored `Packages/ProfileStore.luau`. Geometry (lobby, connectors, baked boards) lives in the unpublished place, not git. Disabled `ServerScriptService.DevLog` is place-native version notes. The Studio plugin needs `rojo serve` running or it reports “server not running”. 21 Days keeps `localhost:34872`.
 
 ---
 
@@ -458,7 +458,7 @@ Portal `Touched`: `if player:GetAttribute("InRun") then MazeRun.Fail(player, "Lo
 
 ### Suggested instance tree
 
-**Target** tree for the finished MVP. **Rojo already syncs** `Shared`, `Remotes` (empty folder), SSS modules (`Main`, `Session`, stubs, `Baker`), `Packages.ProfileStore`, and client script stubs. Studio still needs: unpublished place, lobby stub, one enabled `SpawnLocation`, `Workspace.Mazes.EASY_1` skeleton, `BypassPasses`. HUD, bots templates, Things, shop prompts, and later mazes land in later PRs.
+**Target** tree for the finished MVP. **Rojo already syncs** `Shared`, `Remotes`, SSS modules (`Main`, `Session`, `MazeRun`, `WorldNav`, `Hazards` KillBeam, `Baker`, stubs for later slices), `Packages.ProfileStore`, and client Movement / HUD. **In the place now (PRs 1–8):** lobby + Easy/Mild/Hard landings, connectors, `EASY_1`/`EASY_2`/`MILD_1`/`MILD_2`/`HARD_1` baked mazes, Easy 1 kill beams, unwired Mild/Hard dice/secrets/waypoints/BotSpawns, `BypassPasses`. Still later: Insane climb, remaining hazard types, bots, ODS boards, collectibles, SKUs.
 
 ```
 Workspace
@@ -1478,7 +1478,7 @@ Covered in Proposed Design (custom events + onboarding funnel + per-run `MazeRun
 ## Rollout Plan
 
 1. **New unpublished place in a new universe.** All new badge and pass IDs. No grandfathering of live `940187199` or completion/secret badges.
-2. Build slices in the PR order below. First playable (baker + Easy 1 + run machine) is internal only.
+2. Build slices in the PR order below. First playable (baker + Easy 1 + the run machine) **landed in PRs 1–3**; PRs 4–8 added HUD, Easy 1 beams, Easy 2, Mild, and Hard 1. Remaining: Insane geometry (PR 9), hazard/bot wiring (PR 10–11), stats/collectibles/SKUs (PR 12–14).
 3. Feature flags: `Workspace:GetAttribute("BypassPasses") = true` until PR 14 so Insane is startable on foot while the door is unbuilt. Practical gates otherwise are **presence of dressed mazes**. `MazeConfig` rows can set `enabled = false`; `TryStart` ignores unknown/disabled ids. `Main` uses optional `FindFirstChild` so missing modules do not crash boot.
 4. Soft launch: friends / group. Verify Insane purchase in a real session (Studio ownership is unreliable).
 5. Swap: replace live place contents **or** publish the new place and point the universe’s start place at it. Do not dual-run two MazeRun scripts.
@@ -1584,56 +1584,81 @@ Out of scope (do not block MVP, do not decide here):
 
 ## PR Plan
 
-Each slice is independently reviewable. Luau lands as a git PR in `src/`; Studio-only instance work is a matching place edit. `Main` uses optional `FindFirstChild` so missing modules do not crash boot. **First playable = PR 1 + PR 2 + PR 3.**
+Each slice is independently reviewable. Luau lands as a git PR in `src/`; Studio-only instance work is a matching place edit. `Main` uses optional `FindFirstChild` so missing modules do not crash boot. **First playable = PR 1 + PR 2 + PR 3** (done).
 
 Maps to `GAME_DESIGN.md` §14: baker (PR 2) → run machine (PR 3) → HUD (PR 4) → Easy 1 beams (PR 5) → remaining mazes (PR 6–9) → hazards + bots (PR 10–11) → stats (PR 12) → collectibles (PR 13) → SKUs (PR 14).
+
+| PR | Slice | Status |
+|---|---|---|
+| 1 | Place bootstrap and shared config | **Done** |
+| 2 | Maze baker + Easy 1 preset | **Done** |
+| 3 | Session + MazeRun + WorldNav (first playable) | **Done** |
+| 4 | Movement + HUD | **Done** |
+| 5 | Easy 1 kill beams | **Done** |
+| 6 | Easy 2 + Easy connectors | **Done** |
+| 7 | Mild 1 / Mild 2 + connectors | **Done** |
+| 8 | Hard 1 | **Done** |
+| 9 | Insane blockout + landing | Next |
+| 10 | Remaining hazards + dice | Pending |
+| 11 | Bots (patrol, drone, hunt) | Pending |
+| 12 | Stats, leaderboards, badges | Pending |
+| 13 | Collectibles + achievements panel | Pending |
+| 14 | Insane door + All Maps overlay | Pending |
 
 ### PR 1 — Place bootstrap and shared config
 
 - **Files/components:** `default.project.json`, `src/**`, vendored `Packages/ProfileStore.luau`; new unpublished place **in a new universe** connected with the Rojo plugin; lobby stub + single enabled `SpawnLocation`; Shared `Constants` / `MazeConfig`; empty `Remotes`; `Main`, `GameEvents`, stub modules; `StarterPlayer` WalkSpeed 25 / JumpPower 100 / `UseJumpPower` true; `Workspace:SetAttribute("BypassPasses", true)`; folder skeleton `Workspace.Mazes.EASY_1`. **No** StarterGui HUD, **no** bot templates.
 - **Dependencies:** none.
+- **Status:** Done.
 - **Description:** Empty runnable place with folders and config shape. No gameplay. Locks naming (`INSANE_1`, tag list). **Luau side is in the repo** (`rojo serve` on 34873); Studio still needs the unpublished place + lobby/`EASY_1` skeleton.
 
 ### PR 2 — Maze baker + Easy 1 preset
 
 - **Files/components:** `src/server/Baker/MazeBaker.luau`, `Presets.luau`, `RunBake.server.luau` (Disabled); recursive backtracker; Easy 1 6×6×2, cellSize 24, wallHeight 10.7, clone-not-union container walls; stamp `Board*`, thin vertical `MazeGate`, **EntrancePad inside past the gate**, `MazeExit`, **void-shell** `FallVolume` (under-floor slab + outer skirts; no overlap with boards/pads/connector; above kill plane), `ReplicatedStorage.MazeSolution.EASY_1` at **world CFrames** with `WorldPivot` = maze origin; Easy landing CFrame origin; seed knob.
 - **Dependencies:** PR 1.
+- **Status:** Done.
 - **Description:** Command-bar `Bake("EASY_1")` produces a walkable perfect maze. Re-bake deletes `Board*` only. **No** Session/MazeRun yet — walk in as a ghost. Seed still knobbable.
 
 ### PR 3 — Session + MazeRun + WorldNav on Easy 1 (first playable)
 
 - **Files/components:** `src/server/Session.luau`, `MazeRun.luau`, `WorldNav.luau`; Player attributes `InRun`/`MazeId`/`StartTime`; gate/exit/fall/lobby-portal handlers; **same-maze gate ignore**; death/fall → EntrancePad + Y offset `PivotTo`; portal always teleports (Fail only if InRun); leave → Fail; `MazeRun/HudSync` + `MazeRun/GiveUp` remotes; ProfileStore `StartSessionAsync` with `.Mock` in Studio; analytics APIs as specified (pcall). **`requiresPass` is skipped while `BypassPasses` is true.**
 - **Dependencies:** PR 2 (needs Easy 1 gate, EntrancePad, exit, fall volume, lobby spawn).
+- **Status:** Done.
 - **Description:** The run contract on Easy 1: start at gate, complete at exit (alive, matching id), Fail on give-up or lobby portal, death/fall return to **Easy 1 EntrancePad** with original `StartTime`. Analytics `Joined` once. **This plus PR 2 is first playable.**
 
 ### PR 4 — Movement + HUD
 
 - **Files/components:** `StarterPlayerScripts.Movement`, `Input`, `HUD`; `StarterGui.TimerGui`, `StaminaGui`, `RunGui` (Give up confirm; Map button hidden until PR 14); sprint Shift/R2 +10 cap 35; stamina 100/10/10 exhaust 0 resume >60, drain only while sprinting; hold C/L3 crouch **overrides sprint** (WalkSpeed 16, JumpPower 0); release restores JumpPower **100**; timer `HH:MM:SS:mmm`; PB field (0 until PR 12).
 - **Dependencies:** PR 3 (`HudSync`, attributes, GiveUp remote).
+- **Status:** Done.
 - **Description:** Client feel of the run. No crouch HUD button. Server still reapplies WalkSpeed/JumpPower/`UseJumpPower` on spawn.
 
 ### PR 5 — Easy 1 kill beams
 
 - **Files/components:** `ServerScriptService.Hazards` (KillBeam type only); `ServerStorage.Templates.Hazards.KillBeam`; 3 dressed beam groups under `Workspace.Mazes.EASY_1.Hazards`; CollectionService tag `KillBeam`; 3 s toggle, start off, damage 100. Boot warn if checklist type has zero tags.
 - **Dependencies:** PR 3 (death-to-EntrancePad must already work); PR 4 for seeing the timer survive a beam death.
+- **Status:** Done.
 - **Description:** First lethal hazard as data. Dying to a beam proves acceptance item 2. No per-part Scripts. Counts live on instances, not `MazeConfig`.
 
 ### PR 6 — Easy 2 + Easy connectors
 
 - **Files/components:** Baker preset Easy 2 (6×6); `Workspace.Mazes.EASY_2` skeleton + boards; Easy landing signs; connectors Easy 1-to-2 and Easy 2-to-3 with lobby portals; Easy 2 EntrancePad / FallVolume / gate / exit; TimedFire parts placed but unwired until PR 10.
 - **Dependencies:** PR 2 (baker), PR 3 (run machine + portals).
+- **Status:** Done.
 - **Description:** Second maze as its own run. Physical Easy 1 → connector → Easy 2. Independently playable without Mild/Hard/Insane geometry.
 
 ### PR 7 — Mild 1 / Mild 2 + connectors
 
 - **Files/components:** Baker presets Mild 12×12 (`Wall` template); two Mild mazes + landings + connectors Mild 1-to-2 and Mild 2-to-3; safe elevator geometry (no trap script); secret parts, DicePad (4–8 + lucky), patrol waypoints, drone perch parts — **placed, unwired**.
 - **Dependencies:** PR 2, PR 3.
+- **Status:** Done.
 - **Description:** Mild world only. Elevators must be **safe** (no 100-damage). Hazards/bots in PR 10–11.
 
 ### PR 8 — Hard 1
 
 - **Files/components:** Baker preset Hard 12×12; Hard landing + Hard 1-to-2 connector; `BotSpawn` pads (2); DicePads; secret part; FallVolume / EntrancePad / gate / exit.
 - **Dependencies:** PR 2, PR 3.
+- **Status:** Done.
 - **Description:** Hard geometry as its own run. No hunters yet (PR 11).
 
 ### PR 9 — Insane blockout + landing
